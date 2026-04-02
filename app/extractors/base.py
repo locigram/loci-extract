@@ -14,5 +14,12 @@ class BaseExtractor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         raise NotImplementedError

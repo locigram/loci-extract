@@ -20,7 +20,14 @@ class ImageOcrExtractor(BaseExtractor):
             "image/"
         )
 
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         image = Image.open(file_path)
         text = pytesseract.image_to_string(image).strip()
         document_id = str(uuid4())

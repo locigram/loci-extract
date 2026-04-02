@@ -19,7 +19,14 @@ class XlsxExtractor(BaseExtractor):
             "application/vnd.ms-excel",
         }
 
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         wb = load_workbook(file_path, data_only=True)
         document_id = str(uuid4())
         segments: list[TextSegment] = []

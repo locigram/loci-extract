@@ -30,6 +30,6 @@ def choose_extractor(filename: str, mime_type: str) -> BaseExtractor:
     raise UnsupportedDocumentError(f"No extractor available for {filename} ({mime_type})")
 
 
-def extract_file(file_path: Path, filename: str, mime_type: str):
+def extract_file(file_path: Path, filename: str, mime_type: str, *, ocr_strategy: str = "auto"):
     extractor = choose_extractor(filename, mime_type)
-    return extractor.extract(file_path, filename, mime_type)
+    return extractor.extract(file_path, filename, mime_type, ocr_strategy=ocr_strategy)

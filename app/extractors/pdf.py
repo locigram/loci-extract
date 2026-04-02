@@ -13,10 +13,23 @@ from app.schemas import DocumentMetadata, ExtractionMethod, ExtractionPayload, E
 class PdfExtractor(BaseExtractor):
     name = "pymupdf"
 
+    _OCR_STRATEGY_MESSAGES = {
+        "never": "OCR was disabled for this request (ocr_strategy=never).",
+        "auto": "OCR fallback was requested automatically, but no OCR backend is configured yet.",
+        "always": "OCR was explicitly requested, but no OCR backend is configured yet.",
+    }
+
     def supports(self, filename: str, mime_type: str) -> bool:
         return filename.lower().endswith(".pdf") or mime_type == "application/pdf"
 
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         document = fitz.open(file_path)
         document_id = str(uuid4())
         pages: list[str] = []
@@ -30,12 +43,26 @@ class PdfExtractor(BaseExtractor):
 
         warnings: list[ExtractionWarning] = []
         extraction_status = "success"
+        extra: dict[str, object] = {
+            "ocr_strategy": ocr_strategy,
+            "ocr_available": False,
+            "ocr_backend": None,
+        }
         if not pages:
             extraction_status = "partial"
             warnings.append(
                 ExtractionWarning(
                     code="pdf_no_text_layer",
-                    message="No extractable PDF text found. OCR fallback is not implemented yet.",
+                    message="No extractable PDF text layer was found in this PDF.",
+                )
+            )
+            warnings.append(
+                ExtractionWarning(
+                    code="ocr_not_available",
+                    message=self._OCR_STRATEGY_MESSAGES.get(
+                        ocr_strategy,
+                        "OCR fallback was requested, but no OCR backend is configured yet.",
+                    ),
                 )
             )
 
@@ -56,4 +83,5 @@ class PdfExtractor(BaseExtractor):
             raw_text=raw_text,
             segments=segments,
             chunks=build_chunks(document_id, segments),
+            extra=extra,
         )

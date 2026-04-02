@@ -1,67 +1,223 @@
 # loci-extract
 
-Standalone document extraction and OCR service for ephemeral ingestion pipelines.
+Standalone document extraction and OCR-oriented ingestion service for ephemeral processing pipelines.
 
-`loci-extract` accepts files like PDF, DOCX, XLSX, JPG, and PNG, routes them through the best available extractor, and returns a normalized payload containing:
+`loci-extract` accepts common business attachments such as PDFs, Word docs, spreadsheets, and images, routes them through format-specific extractors, and returns a normalized JSON payload with:
 
-- raw extracted text
-- page/sheet/section segments
-- table content normalized to text
-- optional RAG-ready chunks
-- extraction provenance and warnings
+- canonical raw extracted text
+- page / sheet / paragraph segments
+- extraction warnings and provenance
+- optional chunked text for RAG pipelines
 
-## Goals
+The service is designed to be reusable across systems, including but not limited to Locigram.
 
-- Reusable across multiple systems, including but not limited to Locigram
-- Preserve both canonical raw extraction output and derived chunk output
-- Use prebuilt OCR/document tools behind one stable API
-- Support ephemeral processing first, with optional async jobs later
+## Current capabilities
 
-## Initial stack
+Supported file types today:
 
-- Python 3.11+
-- FastAPI
-- Pydantic
-- PyMuPDF
-- python-docx
-- openpyxl
-- pandas
-- pytesseract
-- Pillow
-- pdfplumber
-- OCRmyPDF (optional system dependency)
+- PDF via **PyMuPDF**
+- DOCX via **python-docx**
+- XLSX via **openpyxl**
+- PNG / JPG / JPEG / TIFF / WEBP via **Tesseract**
+- TXT / MD / CSV / JSON as plain text
 
-## Planned API
+Current status:
 
-### `GET /healthz`
-Health check.
+- parser-first extraction is implemented
+- image OCR is implemented through Tesseract
+- PDF text extraction is implemented through PyMuPDF
+- scanned-PDF OCR fallback is **not wired yet**
+- when a PDF has no text layer, the API returns a clear warning showing OCR was requested but no PDF OCR backend is configured yet
 
-### `POST /extract`
-Multipart upload endpoint that returns a normalized extraction payload.
+## Why this exists
 
-Request:
-- `file`: attachment to process
-- `include_chunks`: boolean, default true
-- `ocr_strategy`: `auto | always | never`
+`loci-extract` separates **document extraction** from downstream systems.
 
-Response:
-- document metadata
-- extraction metadata
-- raw text
-- structured segments
-- chunks
+That means one service can:
 
-## Development
+1. ingest a file
+2. extract canonical text and segments
+3. optionally derive chunks
+4. hand the result to any caller
+
+This keeps downstream systems focused on search, storage, classification, or knowledge ingestion instead of file parsing.
+
+## Output model
+
+Every extractor returns the same top-level shape:
+
+```json
+{
+  "document_id": "uuid",
+  "metadata": {
+    "filename": "contract.pdf",
+    "mime_type": "application/pdf",
+    "source_type": "pdf",
+    "page_count": 4,
+    "sheet_names": [],
+    "language": null
+  },
+  "extraction": {
+    "extractor": "pymupdf",
+    "ocr_used": false,
+    "status": "success",
+    "warnings": []
+  },
+  "raw_text": "full extracted text",
+  "segments": [],
+  "chunks": [],
+  "extra": {}
+}
+```
+
+Key idea:
+
+- `raw_text` is the canonical extraction output
+- `segments` preserve local structure
+- `chunks` are derived artifacts for retrieval pipelines
+
+## Installation
+
+### 1. Create a virtualenv
 
 ```bash
 cd ~/projects/loci-extract
 python3 -m venv .venv
 source .venv/bin/activate
+```
+
+### 2. Install the package
+
+```bash
 pip install -e .[dev]
+```
+
+### 3. Install OCR dependencies for image extraction
+
+`pytesseract` requires the `tesseract` binary to be available on the system.
+
+Ubuntu/Debian example:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
+```
+
+Optional future PDF OCR path may also use tools like:
+
+- `ocrmypdf`
+- `tesseract-ocr`
+- `ghostscript`
+
+Those are not required for the current scaffold.
+
+## Running the service
+
+### Development server
+
+```bash
+cd ~/projects/loci-extract
+source .venv/bin/activate
 uvicorn app.main:app --reload
+```
+
+The API will be available at:
+
+- `http://127.0.0.1:8000`
+- OpenAPI docs: `http://127.0.0.1:8000/docs`
+
+## API usage
+
+### Health check
+
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+Expected response:
+
+```json
+{"status":"ok","service":"loci-extract"}
+```
+
+### Extract a text file
+
+```bash
+curl -X POST http://127.0.0.1:8000/extract \
+  -F "file=@./sample.txt" \
+  -F "include_chunks=true" \
+  -F "ocr_strategy=auto"
+```
+
+### Extract a PDF
+
+```bash
+curl -X POST http://127.0.0.1:8000/extract \
+  -F "file=@./contract.pdf" \
+  -F "include_chunks=true" \
+  -F "ocr_strategy=auto"
+```
+
+### Extract an image with OCR
+
+```bash
+curl -X POST http://127.0.0.1:8000/extract \
+  -F "file=@./scan.jpg" \
+  -F "include_chunks=false" \
+  -F "ocr_strategy=always"
+```
+
+## Request fields
+
+### `file`
+Multipart uploaded document.
+
+### `include_chunks`
+- `true` (default): include derived chunks
+- `false`: return only canonical extraction outputs
+
+### `ocr_strategy`
+Allowed values:
+
+- `auto` — use OCR when appropriate
+- `always` — force OCR intent where supported
+- `never` — disable OCR intent
+
+Right now this setting is fully useful for API intent/provenance and image extraction, and partially useful for PDFs because scanned-PDF OCR fallback is not yet implemented.
+
+## Running tests
+
+```bash
+cd ~/projects/loci-extract
+source .venv/bin/activate
 pytest -q
 ```
 
-## Status
+## Local model workflow
 
-Bootstrap scaffold in progress.
+Core extraction should stay deterministic and parser-first.
+
+Local OpenAI-compatible models are intended for later optional enrichment tasks such as:
+
+- section labeling
+- metadata extraction
+- document classification
+- chunk enrichment
+- review and audit passes
+
+See:
+
+- `docs/local-models.md`
+- `docs/review-workflow.md`
+- `docs/architecture.md`
+
+## Roadmap
+
+Near-term next steps:
+
+- scanned-PDF OCR fallback
+- image preprocessing before OCR
+- table-to-text normalization improvements
+- configurable extraction profiles
+- async job mode for slow OCR workloads
+- optional local-LLM enrichers

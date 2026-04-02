@@ -18,7 +18,14 @@ class DocxExtractor(BaseExtractor):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
 
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         doc = Document(str(file_path))
         paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
         text = "\n\n".join(paragraphs)

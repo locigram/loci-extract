@@ -15,7 +15,14 @@ class PlainTextExtractor(BaseExtractor):
         lower = filename.lower()
         return mime_type.startswith("text/") or lower.endswith((".txt", ".md", ".csv", ".json"))
 
-    def extract(self, file_path: Path, filename: str, mime_type: str) -> ExtractionPayload:
+    def extract(
+        self,
+        file_path: Path,
+        filename: str,
+        mime_type: str,
+        *,
+        ocr_strategy: str = "auto",
+    ) -> ExtractionPayload:
         text = file_path.read_text(encoding="utf-8", errors="replace")
         document_id = str(uuid4())
         segments = [TextSegment(type="section", index=1, label="body", text=text)]
