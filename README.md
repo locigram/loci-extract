@@ -24,10 +24,11 @@ Supported file types today:
 Current status:
 
 - parser-first extraction is implemented
-- image OCR is implemented through Tesseract
+- image OCR is implemented through Tesseract when the `tesseract` binary is available
 - PDF text extraction is implemented through PyMuPDF
-- scanned-PDF OCR fallback is **not wired yet**
-- when a PDF has no text layer, the API returns a clear warning showing OCR was requested but no PDF OCR backend is configured yet
+- scanned-PDF OCR fallback is implemented through a conditional Tesseract path when no PDF text layer is present
+- when OCR dependencies are missing, the API returns structured warnings instead of crashing
+- `/capabilities` reports which OCR/PDF backends are currently available on the host
 
 ## Why this exists
 
@@ -140,6 +141,14 @@ Expected response:
 {"status":"ok","service":"loci-extract"}
 ```
 
+### Capability check
+
+```bash
+curl http://127.0.0.1:8000/capabilities
+```
+
+Use this endpoint to see whether the current machine has OCR/PDF helper binaries available.
+
 ### Extract a text file
 
 ```bash
@@ -183,7 +192,7 @@ Allowed values:
 - `always` — force OCR intent where supported
 - `never` — disable OCR intent
 
-Right now this setting is fully useful for API intent/provenance and image extraction, and partially useful for PDFs because scanned-PDF OCR fallback is not yet implemented.
+This setting is recorded in the response payload. For PDFs and images, behavior depends on whether OCR backends are available on the host. Check `/capabilities` to see what is currently installed.
 
 ## Running tests
 

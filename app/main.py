@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
+from app.capabilities import detect_capabilities
 from app.router import UnsupportedDocumentError, extract_file
 
 app = FastAPI(title="loci-extract", version="0.1.0")
@@ -15,6 +16,11 @@ VALID_OCR_STRATEGIES = {"auto", "always", "never"}
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "loci-extract"}
+
+
+@app.get("/capabilities")
+def capabilities() -> dict[str, object]:
+    return detect_capabilities()
 
 
 @app.post("/extract")

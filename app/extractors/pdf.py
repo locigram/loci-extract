@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 import fitz
+import pytesseract
+from PIL import Image
 
+from app.capabilities import tesseract_available
 from app.chunking import build_chunks
 from app.extractors.base import BaseExtractor
 from app.schemas import DocumentMetadata, ExtractionMethod, ExtractionPayload, ExtractionWarning, TextSegment
@@ -43,10 +47,12 @@ class PdfExtractor(BaseExtractor):
 
         warnings: list[ExtractionWarning] = []
         extraction_status = "success"
+        ocr_used = False
+        ocr_is_available = tesseract_available()
         extra: dict[str, object] = {
             "ocr_strategy": ocr_strategy,
-            "ocr_available": False,
-            "ocr_backend": None,
+            "ocr_available": ocr_is_available,
+            "ocr_backend": "tesseract" if ocr_is_available else None,
         }
         if not pages:
             extraction_status = "partial"
@@ -56,15 +62,48 @@ class PdfExtractor(BaseExtractor):
                     message="No extractable PDF text layer was found in this PDF.",
                 )
             )
-            warnings.append(
-                ExtractionWarning(
-                    code="ocr_not_available",
-                    message=self._OCR_STRATEGY_MESSAGES.get(
-                        ocr_strategy,
-                        "OCR fallback was requested, but no OCR backend is configured yet.",
-                    ),
+            if ocr_strategy == "never":
+                warnings.append(
+                    ExtractionWarning(
+                        code="ocr_disabled",
+                        message=self._OCR_STRATEGY_MESSAGES["never"],
+                    )
                 )
-            )
+            elif ocr_is_available:
+                ocr_pages: list[str] = []
+                ocr_segments: list[TextSegment] = []
+                for idx, page in enumerate(document, start=1):
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image = Image.open(BytesIO(pix.tobytes("png")))
+                    text = pytesseract.image_to_string(image).strip()
+                    if text:
+                        ocr_pages.append(text)
+                        ocr_segments.append(
+                            TextSegment(type="page", index=idx, label=f"page-{idx}", text=text)
+                        )
+                if ocr_pages:
+                    pages = ocr_pages
+                    segments = ocr_segments
+                    extraction_status = "success"
+                    ocr_used = True
+                else:
+                    warnings.append(
+                        ExtractionWarning(
+                            code="ocr_no_text_detected",
+                            message="OCR fallback ran but no text was detected in the PDF pages.",
+                        )
+                    )
+                    ocr_used = True
+            else:
+                warnings.append(
+                    ExtractionWarning(
+                        code="ocr_not_available",
+                        message=self._OCR_STRATEGY_MESSAGES.get(
+                            ocr_strategy,
+                            "OCR fallback was requested, but no OCR backend is configured yet.",
+                        ),
+                    )
+                )
 
         raw_text = "\n\n".join(pages)
         return ExtractionPayload(
@@ -77,6 +116,7 @@ class PdfExtractor(BaseExtractor):
             ),
             extraction=ExtractionMethod(
                 extractor=self.name,
+                ocr_used=ocr_used,
                 status=extraction_status,
                 warnings=warnings,
             ),
