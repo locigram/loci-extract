@@ -1,0 +1,90 @@
+Metadata-Version: 2.4
+Name: loci-extract
+Version: 0.1.0
+Summary: Standalone document extraction and OCR service for ephemeral ingestion pipelines
+Author: sudobot99
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Requires-Dist: pydantic<3.0,>=2.8
+Requires-Dist: python-multipart<1.0,>=0.0.9
+Requires-Dist: pymupdf<2.0,>=1.24
+Requires-Dist: python-docx<2.0,>=1.1
+Requires-Dist: openpyxl<4.0,>=3.1
+Requires-Dist: pandas<3.0,>=2.2
+Requires-Dist: pillow<11.0,>=10.4
+Requires-Dist: pytesseract<1.0,>=0.3.10
+Requires-Dist: pdfplumber<1.0,>=0.11
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.3; extra == "dev"
+Requires-Dist: httpx<1.0,>=0.27; extra == "dev"
+Requires-Dist: ruff<1.0,>=0.6; extra == "dev"
+
+# loci-extract
+
+Standalone document extraction and OCR service for ephemeral ingestion pipelines.
+
+`loci-extract` accepts files like PDF, DOCX, XLSX, JPG, and PNG, routes them through the best available extractor, and returns a normalized payload containing:
+
+- raw extracted text
+- page/sheet/section segments
+- table content normalized to text
+- optional RAG-ready chunks
+- extraction provenance and warnings
+
+## Goals
+
+- Reusable across multiple systems, including but not limited to Locigram
+- Preserve both canonical raw extraction output and derived chunk output
+- Use prebuilt OCR/document tools behind one stable API
+- Support ephemeral processing first, with optional async jobs later
+
+## Initial stack
+
+- Python 3.11+
+- FastAPI
+- Pydantic
+- PyMuPDF
+- python-docx
+- openpyxl
+- pandas
+- pytesseract
+- Pillow
+- pdfplumber
+- OCRmyPDF (optional system dependency)
+
+## Planned API
+
+### `GET /healthz`
+Health check.
+
+### `POST /extract`
+Multipart upload endpoint that returns a normalized extraction payload.
+
+Request:
+- `file`: attachment to process
+- `include_chunks`: boolean, default true
+- `ocr_strategy`: `auto | always | never`
+
+Response:
+- document metadata
+- extraction metadata
+- raw text
+- structured segments
+- chunks
+
+## Development
+
+```bash
+cd ~/projects/loci-extract
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+uvicorn app.main:app --reload
+pytest -q
+```
+
+## Status
+
+Bootstrap scaffold in progress.
