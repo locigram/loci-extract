@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.capabilities import tesseract_available
 from app.chunking import build_chunks
@@ -27,6 +27,26 @@ class ImageOcrExtractor(BaseExtractor):
             "image/"
         )
 
+    def _preprocess_image(self, image: Image.Image) -> tuple[Image.Image, dict[str, object]]:
+        original_mode = image.mode
+        processed = ImageOps.exif_transpose(image)
+        processed = processed.convert("L")
+        processed = ImageOps.autocontrast(processed)
+        processed = processed.point(lambda px: 255 if px > 180 else 0)
+        processed = processed.resize((processed.width * 2, processed.height * 2))
+        metadata = {
+            "original_mode": original_mode,
+            "processed_mode": processed.mode,
+            "preprocessing": [
+                "exif_transpose",
+                "grayscale",
+                "autocontrast",
+                "threshold",
+                "upscale_2x",
+            ],
+        }
+        return processed, metadata
+
     def extract(
         self,
         file_path: Path,
@@ -37,10 +57,13 @@ class ImageOcrExtractor(BaseExtractor):
     ) -> ExtractionPayload:
         document_id = str(uuid4())
         warnings: list[ExtractionWarning] = []
+        ocr_is_available = tesseract_available()
         extra: dict[str, object] = {
             "ocr_strategy": ocr_strategy,
-            "ocr_available": tesseract_available(),
-            "ocr_backend": "tesseract" if tesseract_available() else None,
+            "ocr_available": ocr_is_available,
+            "ocr_backend": "tesseract" if ocr_is_available else None,
+            "ocr_attempted": False,
+            "result_source": "none",
         }
 
         if ocr_strategy == "never":
@@ -64,7 +87,7 @@ class ImageOcrExtractor(BaseExtractor):
                 extra=extra,
             )
 
-        if not tesseract_available():
+        if not ocr_is_available:
             warnings.append(
                 ExtractionWarning(
                     code="tesseract_not_available",
@@ -86,10 +109,23 @@ class ImageOcrExtractor(BaseExtractor):
             )
 
         image = Image.open(file_path)
-        text = pytesseract.image_to_string(image).strip()
-        segments = [TextSegment(type="page", index=1, label="image-1", text=text)] if text else []
+        processed_image, preprocessing_metadata = self._preprocess_image(image)
+        extra.update(preprocessing_metadata)
+        extra["ocr_attempted"] = True
+        text = pytesseract.image_to_string(processed_image).strip()
+        segments = [
+            TextSegment(
+                type="page",
+                index=1,
+                label="image-1",
+                text=text,
+                metadata={"source": "ocr", "page_number": 1},
+            )
+        ] if text else []
         status = "success" if text else "partial"
-        if not text:
+        if text:
+            extra["result_source"] = "ocr"
+        else:
             warnings.append(
                 ExtractionWarning(
                     code="ocr_no_text_detected",

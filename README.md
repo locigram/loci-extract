@@ -16,18 +16,22 @@ The service is designed to be reusable across systems, including but not limited
 Supported file types today:
 
 - PDF via **PyMuPDF**
-- DOCX via **python-docx**
-- XLSX via **openpyxl**
+- DOCX via **python-docx** (paragraphs and tables)
+- XLSX via **openpyxl** (sheet summaries plus row-level provenance)
 - PNG / JPG / JPEG / TIFF / WEBP via **Tesseract**
 - TXT / MD / CSV / JSON as plain text
 
 Current status:
 
 - parser-first extraction is implemented
-- image OCR is implemented through Tesseract when the `tesseract` binary is available
+- image OCR is implemented through Tesseract when the `tesseract` binary is available, with lightweight preprocessing (orientation fix, grayscale, autocontrast, thresholding, upscale)
 - PDF text extraction is implemented through PyMuPDF
 - scanned-PDF OCR fallback is implemented through a conditional Tesseract path when no PDF text layer is present
+- PDF `ocr_strategy=always` is supported, with page-level provenance metadata
+- DOCX extraction preserves paragraphs, headings/list-item structure, and tables
+- XLSX extraction preserves sheet summaries plus row-level provenance
 - when OCR dependencies are missing, the API returns structured warnings instead of crashing
+- upload-size and PDF-page guardrails are enforced through configurable limits
 - `/capabilities` reports which OCR/PDF backends are currently available on the host
 
 ## Why this exists
@@ -194,6 +198,33 @@ Allowed values:
 
 This setting is recorded in the response payload. For PDFs and images, behavior depends on whether OCR backends are available on the host. Check `/capabilities` to see what is currently installed.
 
+The response `extra` block reports stable extraction metadata such as:
+
+- `segment_count`
+- `chunk_count`
+- `warning_codes`
+- `has_warnings`
+- `content_detected`
+- `empty_content`
+- `partial_reason` — currently `empty_content` for blank/empty partial extractions
+- `non_empty_page_count`
+- `non_empty_sheet_count`
+- `table_segment_count`
+
+For PDFs specifically, `extra` also reports:
+
+- `ocr_attempted` — whether OCR actually ran
+- `result_source` — `parser`, `ocr`, `parser_fallback`, or `none`
+- `page_limit_applied` — whether a PDF page cap truncated processing
+- `processed_page_count` — how many pages were actually processed
+- `max_pdf_pages` — the configured processing cap
+- `page_provenance` — one entry per processed page with `page_number`, `source`, `has_text`, and `text_length`
+
+Environment variables for operational guardrails:
+
+- `LOCI_EXTRACT_MAX_UPLOAD_BYTES` — maximum upload size accepted by `/extract`
+- `LOCI_EXTRACT_MAX_PDF_PAGES` — maximum number of PDF pages processed per request
+
 ## Running tests
 
 ```bash
@@ -222,11 +253,12 @@ See:
 
 ## Roadmap
 
-Near-term next steps:
+Remaining improvements worth considering:
 
-- scanned-PDF OCR fallback
 - image preprocessing before OCR
-- table-to-text normalization improvements
+- richer PDF mixed-mode provenance summaries
+- XLSX header inference / logical table grouping
 - configurable extraction profiles
 - async job mode for slow OCR workloads
 - optional local-LLM enrichers
+- legacy Office format support if needed (`.doc`, `.xls`)
