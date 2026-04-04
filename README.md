@@ -49,6 +49,19 @@ That means one service can:
 
 This keeps downstream systems focused on search, storage, classification, or knowledge ingestion instead of file parsing.
 
+## CI
+
+The repo is set up to use a dedicated self-hosted GitHub Actions runner on `SURU-DEVOPS` with labels:
+
+- `self-hosted`
+- `Linux`
+- `X64`
+- `suru-devops`
+- `loci-extract`
+- `docker`
+
+The CI workflow runs the pytest suite and a Docker build + container smoke test on that runner.
+
 ## Output model
 
 Every extractor returns the same top-level shape:
@@ -117,6 +130,54 @@ Optional future PDF OCR path may also use tools like:
 - `ghostscript`
 
 Those are not required for the current scaffold.
+
+## Docker
+
+`loci-extract` now ships with a standalone container build that includes the current OCR/PDF system dependencies:
+
+- `tesseract-ocr`
+- `poppler-utils`
+- `ghostscript`
+
+### Build the image
+
+```bash
+cd ~/projects/loci-extract
+docker build -t loci-extract:local .
+```
+
+### Run the container directly
+
+```bash
+docker run --rm -p 8000:8000 loci-extract:local
+```
+
+### Run with Compose
+
+```bash
+cd ~/projects/loci-extract
+docker compose up --build -d
+```
+
+Then use:
+
+- API: `http://127.0.0.1:8000`
+- OpenAPI docs: `http://127.0.0.1:8000/docs`
+
+### Compose configuration
+
+The included `compose.yaml` exposes these optional environment variables:
+
+- `LOCI_EXTRACT_MAX_UPLOAD_BYTES` (default `26214400`)
+- `LOCI_EXTRACT_MAX_PDF_PAGES` (default `200`)
+
+Example:
+
+```bash
+export LOCI_EXTRACT_MAX_UPLOAD_BYTES=52428800
+export LOCI_EXTRACT_MAX_PDF_PAGES=400
+docker compose up --build -d
+```
 
 ## Running the service
 
@@ -204,6 +265,7 @@ curl http://127.0.0.1:8000/capabilities
 ```
 
 Use this endpoint to see whether the current machine has OCR/PDF helper binaries available.
+In the Docker image, the current baseline OCR/PDF helper binaries are baked in.
 
 ### Extract a text file
 

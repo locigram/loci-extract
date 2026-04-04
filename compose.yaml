@@ -1,0 +1,19 @@
+services:
+  loci-extract:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: loci-extract:local
+    container_name: loci-extract
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      LOCI_EXTRACT_MAX_UPLOAD_BYTES: ${LOCI_EXTRACT_MAX_UPLOAD_BYTES:-26214400}
+      LOCI_EXTRACT_MAX_PDF_PAGES: ${LOCI_EXTRACT_MAX_PDF_PAGES:-200}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
