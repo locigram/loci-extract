@@ -2,6 +2,7 @@ from io import BytesIO
 
 import fitz
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.main import app
 
@@ -151,4 +152,38 @@ def test_extract_structured_low_quality_ocr_adds_quality_review_reason(monkeypat
     assert payload['classification']['doc_type'] == 'w2'
     assert payload['structured']['review']['requires_human_review'] is True
     assert 'low_ocr_quality_tax_document' in payload['structured']['review']['review_reasons']
+    assert 'weak_ocr_evidence' in payload['structured']['review']['review_reasons']
+    assert payload['raw_extraction']['extra']['ocr_quality_summary']['low_quality'] is True
+    assert payload['raw_extraction']['extra']['ocr_evidence_snippets'][0]['page_number'] == 1
+
+
+
+def test_extract_structured_ocr_backed_receipt_requires_review(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.image_ocr.tesseract_available', lambda: True)
+    monkeypatch.setattr(
+        'app.extractors.image_ocr.extract_best_ocr_result',
+        lambda image: {
+            'text': 'Coffee Shop\n03/14/2024\nSubtotal 10.00\nTax 0.80\nTotal 10.80',
+            'score': 6.0,
+            'selected_pass': 'soft_upscale',
+            'processed_mode': 'L',
+            'preprocessing': ['grayscale'],
+            'ocr_passes': [],
+        },
+    )
+
+    image_bytes = BytesIO()
+    Image.new('RGB', (8, 8), color='white').save(image_bytes, format='PNG')
+    image_bytes.seek(0)
+
+    response = client.post(
+        '/extract/structured',
+        files={'file': ('receipt.png', image_bytes, 'image/png')},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['classification']['doc_type'] == 'receipt'
+    assert payload['structured']['review']['requires_human_review'] is True
+    assert 'ocr_backed_receipt' in payload['structured']['review']['review_reasons']
+    assert 'low_ocr_quality_receipt' in payload['structured']['review']['review_reasons']
     assert 'weak_ocr_evidence' in payload['structured']['review']['review_reasons']

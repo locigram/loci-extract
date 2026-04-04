@@ -27,6 +27,97 @@ def _max_upload_bytes() -> int:
     return value if value > 0 else DEFAULT_MAX_UPLOAD_BYTES
 
 
+def _snippet(text: str, *, max_len: int = 160) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 1].rstrip() + "…"
+
+
+
+def _build_ocr_enrichment(payload: ExtractionPayload) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    page_provenance = payload.extra.get("page_provenance") if isinstance(payload.extra.get("page_provenance"), list) else []
+    ocr_attempted = bool(payload.extra.get("ocr_attempted"))
+    selected_pass = payload.extra.get("selected_ocr_pass")
+    result_source = payload.extra.get("result_source")
+    has_ocr_signals = ocr_attempted or selected_pass is not None or any(
+        isinstance(entry, dict) and entry.get("source") in {"ocr", "parser_fallback"} for entry in page_provenance
+    )
+    if not has_ocr_signals:
+        return None, []
+
+    ocr_scores = [
+        float(entry.get("ocr_score") or 0.0)
+        for entry in page_provenance
+        if isinstance(entry, dict) and isinstance(entry.get("ocr_score"), (int, float))
+    ]
+    average_score = payload.extra.get("ocr_average_score")
+    if not isinstance(average_score, (int, float)):
+        average_score = payload.extra.get("ocr_score")
+    if not isinstance(average_score, (int, float)):
+        average_score = round(sum(ocr_scores) / len(ocr_scores), 2) if ocr_scores else 0.0
+
+    weak_pages: list[int] = []
+    for entry in page_provenance:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("source") not in {"ocr", "parser_fallback"}:
+            continue
+        page_number = entry.get("page_number")
+        score = float(entry.get("ocr_score", 0.0) or 0.0)
+        text_length = int(entry.get("text_length", 0) or 0)
+        if isinstance(page_number, int) and (score < 10 or text_length < 20):
+            weak_pages.append(page_number)
+
+    evidence_snippets: list[dict[str, object]] = []
+    for segment in payload.segments:
+        if segment.type != "page":
+            continue
+        source = segment.metadata.get("source")
+        if source not in {"ocr", "parser_fallback"}:
+            continue
+        page_number = segment.metadata.get("page_number")
+        evidence_snippets.append(
+            {
+                "page_number": page_number,
+                "source": source,
+                "ocr_score": segment.metadata.get("ocr_score"),
+                "selected_ocr_pass": segment.metadata.get("selected_ocr_pass"),
+                "snippet": _snippet(segment.text),
+            }
+        )
+
+    if not evidence_snippets and payload.raw_text.strip():
+        evidence_snippets.append(
+            {
+                "page_number": 1,
+                "source": result_source,
+                "ocr_score": payload.extra.get("ocr_score") or average_score,
+                "selected_ocr_pass": selected_pass,
+                "snippet": _snippet(payload.raw_text),
+            }
+        )
+
+    summary = {
+        "attempted": ocr_attempted,
+        "used": payload.extraction.ocr_used,
+        "result_source": result_source,
+        "average_score": round(float(average_score or 0.0), 2),
+        "min_score": round(min(ocr_scores), 2) if ocr_scores else round(float(average_score or 0.0), 2),
+        "max_score": round(max(ocr_scores), 2) if ocr_scores else round(float(average_score or 0.0), 2),
+        "selected_passes": [
+            entry.get("selected_ocr_pass")
+            for entry in page_provenance
+            if isinstance(entry, dict) and entry.get("selected_ocr_pass")
+        ]
+        or ([selected_pass] if selected_pass else []),
+        "weak_pages": weak_pages,
+        "low_quality": bool((average_score or 0.0) < 10 or weak_pages),
+    }
+    return summary, evidence_snippets[:3]
+
+
+
 def _enrich_payload_extra(payload: ExtractionPayload) -> None:
     """Add stable extraction stats and provenance hints to payload.extra."""
     warning_codes = [warning.code for warning in payload.extraction.warnings]
@@ -50,6 +141,11 @@ def _enrich_payload_extra(payload: ExtractionPayload) -> None:
 
     table_segments = [segment for segment in payload.segments if segment.type == "table"]
     payload.extra.setdefault("table_segment_count", len(table_segments))
+
+    ocr_quality_summary, ocr_evidence_snippets = _build_ocr_enrichment(payload)
+    if ocr_quality_summary is not None:
+        payload.extra.setdefault("ocr_quality_summary", ocr_quality_summary)
+        payload.extra.setdefault("ocr_evidence_snippets", ocr_evidence_snippets)
 
 
 def _validate_ocr_strategy(ocr_strategy: str) -> None:

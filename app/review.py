@@ -3,7 +3,8 @@ from __future__ import annotations
 from app.schemas import ReviewMetadata, StructuredDocType
 
 
-TAX_REVIEW_DOC_TYPES = {"w2", "1099-nec", "tax_return_package"}
+TAX_FORM_REVIEW_DOC_TYPES = {"w2", "1099-nec", "tax_return_package"}
+OCR_SENSITIVE_DOC_TYPES = TAX_FORM_REVIEW_DOC_TYPES | {"receipt"}
 
 
 def _is_missing(value: object) -> bool:
@@ -28,6 +29,8 @@ def build_review_metadata(
     warning_codes = raw_extra.get("warning_codes") or []
     page_provenance = raw_extra.get("page_provenance") if isinstance(raw_extra.get("page_provenance"), list) else []
     ocr_average_score = raw_extra.get("ocr_average_score")
+    if not isinstance(ocr_average_score, (int, float)):
+        ocr_average_score = raw_extra.get("ocr_score")
 
     if missing_fields:
         review_reasons.append("missing_required_fields")
@@ -40,14 +43,17 @@ def build_review_metadata(
     if any(entry.get("source") == "none" for entry in page_provenance if isinstance(entry, dict)):
         review_reasons.append("pages_with_no_text")
 
-    if document_type in TAX_REVIEW_DOC_TYPES:
-        if raw_extra.get("result_source") in {"ocr", "parser_fallback"}:
-            review_reasons.append("ocr_backed_tax_document")
-        elif any(entry.get("source") in {"ocr", "parser_fallback"} for entry in page_provenance if isinstance(entry, dict)):
-            review_reasons.append("ocr_backed_tax_document")
+    if document_type in OCR_SENSITIVE_DOC_TYPES:
+        ocr_backed = raw_extra.get("result_source") in {"ocr", "parser_fallback"} or any(
+            entry.get("source") in {"ocr", "parser_fallback"} for entry in page_provenance if isinstance(entry, dict)
+        )
+        if ocr_backed:
+            review_reasons.append("ocr_backed_tax_document" if document_type in TAX_FORM_REVIEW_DOC_TYPES else "ocr_backed_receipt")
 
         if isinstance(ocr_average_score, (int, float)) and ocr_average_score < 10:
-            review_reasons.append("low_ocr_quality_tax_document")
+            review_reasons.append(
+                "low_ocr_quality_tax_document" if document_type in TAX_FORM_REVIEW_DOC_TYPES else "low_ocr_quality_receipt"
+            )
         if any(
             isinstance(entry, dict)
             and entry.get("source") in {"ocr", "parser_fallback"}

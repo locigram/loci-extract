@@ -124,6 +124,30 @@ Tax 0.80"""
     assert "amounts.total" in structured.review.missing_fields
 
 
+
+def test_build_receipt_document_adds_receipt_specific_ocr_review_reasons() -> None:
+    raw_text = """Coffee Shop
+03/14/2024
+Subtotal 10.00
+Tax 0.80
+Total 10.80"""
+    structured = build_receipt_document(
+        _payload(
+            raw_text,
+            source_type="image",
+            extra={
+                "result_source": "ocr",
+                "ocr_score": 6.0,
+                "page_provenance": [{"page_number": 1, "source": "ocr", "ocr_score": 6.0, "text_length": 12}],
+            },
+        )
+    )
+    assert structured.review.requires_human_review is True
+    assert "ocr_backed_receipt" in structured.review.review_reasons
+    assert "low_ocr_quality_receipt" in structured.review.review_reasons
+    assert "weak_ocr_evidence" in structured.review.review_reasons
+
+
 def test_build_tax_return_package_document() -> None:
     raw_text = """
 Form 1040 U.S. Individual Income Tax Return 2024

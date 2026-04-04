@@ -31,6 +31,8 @@ Current status:
 - DOCX extraction preserves paragraphs, headings/list-item structure, and tables
 - XLSX extraction preserves sheet summaries plus row-level provenance
 - when OCR dependencies are missing, the API returns structured warnings instead of crashing
+- raw extraction `extra` now includes stable `ocr_quality_summary` and `ocr_evidence_snippets` fields for downstream review/audit consumers
+- OCR-backed tax forms and receipts are conservatively flagged for human review when evidence is weak or low quality
 - upload-size and PDF-page guardrails are enforced through configurable limits
 - `/capabilities` reports which OCR/PDF backends are currently available on the host
 

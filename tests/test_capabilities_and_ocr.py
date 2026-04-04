@@ -186,3 +186,41 @@ def test_pdf_extractor_marks_low_quality_ocr_as_partial(monkeypatch, tmp_path: P
     assert payload.extraction.status == 'partial'
     assert 'ocr_low_quality' in warning_codes
     assert payload.extra['ocr_average_score'] < 25
+
+
+
+def test_pdf_extractor_enrichment_surfaces_ocr_quality_summary(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: True)
+    monkeypatch.setattr(
+        'app.extractors.pdf.extract_best_ocr_result',
+        lambda image: {
+            'text': 'Form W-2 Wage and Tax Statement 2024 Employee name John Doe',
+            'score': 5.0,
+            'selected_pass': 'soft_upscale',
+            'processed_mode': 'L',
+            'preprocessing': ['grayscale'],
+            'ocr_passes': [],
+        },
+    )
+
+    document = fitz.open()
+    document.new_page()
+    pdf_bytes = document.tobytes()
+
+    response = client.post(
+        '/extract',
+        files={'file': ('ocr-w2.pdf', pdf_bytes, 'application/pdf')},
+        data={'ocr_strategy': 'always'},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload['extra']['ocr_quality_summary']
+    assert summary['attempted'] is True
+    assert summary['result_source'] == 'ocr'
+    assert summary['average_score'] == 5.0
+    assert summary['low_quality'] is True
+    assert summary['weak_pages'] == [1]
+    assert payload['extra']['ocr_evidence_snippets'][0]['page_number'] == 1
+    assert payload['extra']['ocr_evidence_snippets'][0]['selected_ocr_pass'] == 'soft_upscale'
+    assert 'Form W-2 Wage and Tax Statement' in payload['extra']['ocr_evidence_snippets'][0]['snippet']

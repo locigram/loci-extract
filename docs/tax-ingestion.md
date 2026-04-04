@@ -183,8 +183,10 @@ Each structured output should include review metadata like:
 - `review_reasons`
 - `missing_fields`
 - `validation_errors`
-- `field_confidence`
-- `document_confidence`
+- OCR quality summary derived from raw extraction (`extra.ocr_quality_summary`)
+- OCR evidence snippets for quick audit (`extra.ocr_evidence_snippets`)
+- optional future `field_confidence`
+- optional future `document_confidence`
 
 ### Common review triggers
 
