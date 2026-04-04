@@ -884,9 +884,12 @@ Current supported structured types:
 Current behavior is intentionally conservative for OCR-heavy tax documents:
 
 - parser/OCR provenance from the raw extraction layer is preserved
+- image OCR and PDF OCR now use multi-pass preprocessing with best-pass selection
 - OCR-backed tax documents are surfaced with review reasons instead of silent confidence
+- low OCR score / weak OCR evidence can trigger review explicitly
 - masking is enabled by default in structured output
 - the full raw extraction payload remains embedded for audit and reprocessing
+- structured outputs now include lightweight evidence snippets for key extracted fields
 
 This is the correct starting posture for tax ingestion: preserve provenance, normalize deterministically, and require human review whenever OCR quality might compromise trust.
 

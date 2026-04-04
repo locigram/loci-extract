@@ -26,6 +26,7 @@ def test_extract_structured_w2_response() -> None:
     assert payload['structured']['document_type'] == 'w2'
     assert payload['raw_extraction']['metadata']['source_type'] == 'text'
     assert payload['structured']['fields']['employee']['ssn_masked'] == 'XXX-XX-1234'
+    assert payload['structured']['fields']['evidence']['employee_name'] is not None
 
 
 def test_extract_structured_1099_nec_response() -> None:
@@ -43,6 +44,7 @@ def test_extract_structured_1099_nec_response() -> None:
     payload = response.json()
     assert payload['classification']['doc_type'] == '1099-nec'
     assert payload['structured']['fields']['boxes']['1_nonemployee_compensation'] == 25000.0
+    assert payload['structured']['fields']['evidence']['box_1'] is not None
 
 
 def test_extract_structured_unknown_document_requires_review() -> None:
@@ -99,10 +101,14 @@ def test_extract_structured_without_chunks_preserves_raw_payload() -> None:
 
 def test_extract_structured_pdf_with_ocr_provenance_requires_review_for_tax_doc(monkeypatch) -> None:
     monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: True)
-    monkeypatch.setattr(
-        'app.extractors.pdf.pytesseract.image_to_string',
-        lambda image: "Form W-2 Wage and Tax Statement 2024\nEmployee name John Doe\nEmployer name ACME Payroll\n1 Wages, tips, other compensation 1000.00",
-    )
+
+    def fake_ocr(image):
+        pass_name = getattr(image, '_ocr_pass_name', '')
+        if pass_name == 'soft_upscale':
+            return "Form W-2 Wage and Tax Statement 2024\nEmployee name John Doe\nEmployer name ACME Payroll\n1 Wages, tips, other compensation 1000.00"
+        return 'w2'
+
+    monkeypatch.setattr('app.ocr.pytesseract.image_to_string', fake_ocr)
     document = fitz.open()
     document.new_page()
     pdf_bytes = document.tobytes()
@@ -116,3 +122,33 @@ def test_extract_structured_pdf_with_ocr_provenance_requires_review_for_tax_doc(
     assert payload['classification']['doc_type'] == 'w2'
     assert payload['structured']['review']['requires_human_review'] is True
     assert 'ocr_backed_tax_document' in payload['structured']['review']['review_reasons']
+    assert payload['raw_extraction']['extra']['ocr_average_score'] > 25
+
+
+def test_extract_structured_low_quality_ocr_adds_quality_review_reason(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: True)
+    monkeypatch.setattr(
+        'app.extractors.pdf.extract_best_ocr_result',
+        lambda image: {
+            'text': "Form W-2 Wage and Tax Statement 2024\nEmployee name John Doe\nEmployer name ACME Payroll\n1 Wages, tips, other compensation 1000.00",
+            'score': 5.0,
+            'selected_pass': 'soft_upscale',
+            'processed_mode': 'L',
+            'preprocessing': ['grayscale'],
+            'ocr_passes': [],
+        },
+    )
+    document = fitz.open()
+    document.new_page()
+    pdf_bytes = document.tobytes()
+    response = client.post(
+        '/extract/structured',
+        files={'file': ('ocr-w2.pdf', BytesIO(pdf_bytes), 'application/pdf')},
+        data={'ocr_strategy': 'always'},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['classification']['doc_type'] == 'w2'
+    assert payload['structured']['review']['requires_human_review'] is True
+    assert 'low_ocr_quality_tax_document' in payload['structured']['review']['review_reasons']
+    assert 'weak_ocr_evidence' in payload['structured']['review']['review_reasons']

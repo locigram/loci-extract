@@ -5,13 +5,13 @@ import re
 from app.normalization import find_first_date, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import get_text_lines
+from app.structured.common import first_source_pages, get_text_lines, snippet_around_match
 
 _PAYMENT_KEYWORDS = ("visa", "mastercard", "amex", "american express", "cash", "debit")
 
 
 def _find_amount(label: str, text: str) -> float | None:
-    match = re.search(rf"{label}\s*[:#-]?\s*([\$\d,().-]+)", text, flags=re.IGNORECASE)
+    match = re.search(rf"\b{label}\b\s*[:#-]?\s*([\$\d,().-]+)", text, flags=re.IGNORECASE)
     return parse_amount(match.group(1)) if match else None
 
 
@@ -61,6 +61,14 @@ def build_receipt_document(raw_payload: ExtractionPayload, *, mask_pii: bool = T
             "total": total,
         },
         "line_items": [],
+        "evidence": {
+            "source_pages": first_source_pages(raw_payload),
+            "merchant_name": lines[0] if lines else None,
+            "date": snippet_around_match(text, [r"\b\d{1,2}/\d{1,2}/\d{4}\b", r"\b\d{4}-\d{2}-\d{2}\b"]),
+            "subtotal": snippet_around_match(text, [r"\bsubtotal\b\s*[:#-]?\s*([\$\d,().-]+)"]),
+            "tax": snippet_around_match(text, [r"\btax\b\s*[:#-]?\s*([\$\d,().-]+)"]),
+            "total": snippet_around_match(text, [r"\btotal\b\s*[:#-]?\s*([\$\d,().-]+)"]),
+        },
     }
     review = build_review_metadata(
         required_fields={

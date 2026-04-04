@@ -5,6 +5,7 @@ import re
 from app.normalization import parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
+from app.structured.common import first_source_pages, snippet_around_match
 
 
 def _find_amount(label: str, text: str) -> float | None:
@@ -16,9 +17,13 @@ def build_tax_return_package_document(raw_payload: ExtractionPayload, *, mask_pi
     text = raw_payload.raw_text
     year_match = re.search(r"form\s+1040.*?(20\d{2})", text, flags=re.IGNORECASE | re.DOTALL)
     tax_year = int(year_match.group(1)) if year_match else None
-    taxpayer_name_match = re.search(r"taxpayer(?:\s+name)?\s*[:#-]?\s*([^\n]+)", text, flags=re.IGNORECASE)
+    taxpayer_name_patterns = [
+        r"taxpayer(?:\s+name)?\s*[:#-]?\s*([^\n]+)",
+        r"your first name and middle initial\s*[:#-]?\s*([^\n]+)",
+    ]
+    taxpayer_name_match = re.search(taxpayer_name_patterns[0], text, flags=re.IGNORECASE)
     if not taxpayer_name_match:
-        taxpayer_name_match = re.search(r"your first name and middle initial\s*[:#-]?\s*([^\n]+)", text, flags=re.IGNORECASE)
+        taxpayer_name_match = re.search(taxpayer_name_patterns[1], text, flags=re.IGNORECASE)
     primary_name = taxpayer_name_match.group(1).strip() if taxpayer_name_match else None
 
     filing_status = None
@@ -70,6 +75,13 @@ def build_tax_return_package_document(raw_payload: ExtractionPayload, *, mask_pi
         },
         "attached_forms": attached_forms,
         "pages": pages,
+        "evidence": {
+            "source_pages": first_source_pages(raw_payload),
+            "taxpayer_name": snippet_around_match(text, taxpayer_name_patterns),
+            "total_income": snippet_around_match(text, [r"total income\s*[:#-]?\s*([\$\d,().-]+)"]),
+            "adjusted_gross_income": snippet_around_match(text, [r"adjusted gross income\s*[:#-]?\s*([\$\d,().-]+)"]),
+            "taxable_income": snippet_around_match(text, [r"taxable income\s*[:#-]?\s*([\$\d,().-]+)"]),
+        },
     }
 
     review = build_review_metadata(

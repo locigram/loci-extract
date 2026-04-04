@@ -19,6 +19,37 @@ def search_patterns(text: str, patterns: Iterable[str], *, flags: int = re.IGNOR
     return None
 
 
+def snippet_around_match(text: str, patterns: Iterable[str], *, width: int = 80) -> str | None:
+    match = search_patterns(text, patterns)
+    if not match:
+        return None
+    start = max(match.start() - width, 0)
+    end = min(match.end() + width, len(text))
+    return " ".join(text[start:end].split())
+
+
+def first_source_pages(raw_payload: ExtractionPayload, *, limit: int = 2) -> list[int]:
+    pages: list[int] = []
+    for segment in raw_payload.segments:
+        page_number = segment.metadata.get("page_number")
+        if isinstance(page_number, int) and page_number not in pages:
+            pages.append(page_number)
+        if len(pages) >= limit:
+            return pages
+
+    page_provenance = raw_payload.extra.get("page_provenance")
+    if isinstance(page_provenance, list):
+        for entry in page_provenance:
+            if not isinstance(entry, dict):
+                continue
+            page_number = entry.get("page_number")
+            if isinstance(page_number, int) and page_number not in pages:
+                pages.append(page_number)
+            if len(pages) >= limit:
+                break
+    return pages
+
+
 def unknown_structured_document() -> StructuredDocument:
     return StructuredDocument(
         document_type="unknown",

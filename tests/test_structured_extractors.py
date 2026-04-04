@@ -51,11 +51,12 @@ def test_review_marks_ocr_backed_tax_document() -> None:
     review = build_review_metadata(
         required_fields={"employee.full_name": "Jane Doe"},
         validation_errors=[],
-        raw_extra={"page_provenance": [{"page_number": 1, "source": "ocr"}]},
+        raw_extra={"page_provenance": [{"page_number": 1, "source": "ocr", "ocr_score": 12.0, "text_length": 8}]},
         document_type="w2",
     )
     assert review.requires_human_review is True
     assert "ocr_backed_tax_document" in review.review_reasons
+    assert "weak_ocr_evidence" in review.review_reasons
 
 
 def test_router_returns_unknown_fallback() -> None:
@@ -78,13 +79,15 @@ Employer name Example Payroll Inc
 5 Medicare wages and tips 85000.00
 6 Medicare tax withheld 1232.50
 """
-    structured = build_w2_document(_payload(raw_text))
+    structured = build_w2_document(_payload(raw_text, extra={"page_provenance": [{"page_number": 1, "source": "parser", "has_text": True, "text_length": 120}]}))
     assert structured.document_type == "w2"
     assert structured.fields["tax_year"] == 2024
     assert structured.fields["employee"]["full_name"] == "John Q Public"
     assert structured.fields["employee"]["ssn_last4"] == "1234"
     assert structured.fields["employer"]["name"] == "Example Payroll Inc"
     assert structured.fields["boxes"]["1_wages_tips_other_comp"] == 85000.00
+    assert structured.fields["evidence"]["source_pages"] == [1]
+    assert 'Employee name John Q Public' in structured.fields["evidence"]["employee_name"]
     assert structured.review.requires_human_review is False
 
 
@@ -98,12 +101,13 @@ Payer's TIN 98-7654321
 1 Nonemployee compensation 25000.00
 4 Federal income tax withheld 0.00
 """
-    structured = build_1099_nec_document(_payload(raw_text))
+    structured = build_1099_nec_document(_payload(raw_text, extra={"page_provenance": [{"page_number": 1, "source": "parser", "has_text": True, "text_length": 120}]}))
     assert structured.document_type == "1099-nec"
     assert structured.fields["recipient"]["name"] == "Jane Contractor"
     assert structured.fields["recipient"]["tin_last4"] == "4321"
     assert structured.fields["payer"]["name"] == "ACME Services LLC"
     assert structured.fields["boxes"]["1_nonemployee_compensation"] == 25000.00
+    assert 'Nonemployee compensation' in structured.fields["evidence"]["box_1"]
     assert structured.review.requires_human_review is False
 
 
@@ -112,9 +116,10 @@ def test_build_receipt_document_requires_review_without_total() -> None:
 03/14/2024
 Subtotal 10.00
 Tax 0.80"""
-    structured = build_receipt_document(_payload(raw_text, source_type="image", extra={"result_source": "ocr"}))
+    structured = build_receipt_document(_payload(raw_text, source_type="image", extra={"result_source": "ocr", "ocr_score": 10.0}))
     assert structured.document_type == "receipt"
     assert structured.fields["merchant"]["name"] == "Coffee Shop"
+    assert structured.fields["evidence"]["date"] is not None
     assert structured.review.requires_human_review is True
     assert "amounts.total" in structured.review.missing_fields
 
@@ -140,4 +145,5 @@ Schedule C
     assert structured.fields["taxpayer"]["primary_name"] == "John and Jane Doe"
     assert structured.fields["summary"]["total_income"] == 100000.00
     assert "schedule-c" in structured.fields["attached_forms"]
+    assert structured.fields["evidence"]["taxpayer_name"] is not None
     assert structured.review.requires_human_review is False

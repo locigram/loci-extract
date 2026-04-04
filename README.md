@@ -24,9 +24,9 @@ Supported file types today:
 Current status:
 
 - parser-first extraction is implemented
-- image OCR is implemented through Tesseract when the `tesseract` binary is available, with lightweight preprocessing (orientation fix, grayscale, autocontrast, thresholding, upscale)
+- image OCR is implemented through Tesseract when the `tesseract` binary is available, with multi-pass preprocessing and best-pass selection
 - PDF text extraction is implemented through PyMuPDF
-- scanned-PDF OCR fallback is implemented through a conditional Tesseract path when no PDF text layer is present
+- scanned-PDF OCR fallback is implemented through a conditional Tesseract path when no PDF text layer is present, using multi-pass OCR selection per page
 - PDF `ocr_strategy=always` is supported, with page-level provenance metadata
 - DOCX extraction preserves paragraphs, headings/list-item structure, and tables
 - XLSX extraction preserves sheet summaries plus row-level provenance
@@ -430,7 +430,9 @@ For PDFs specifically, `extra` also reports:
 - `page_limit_applied` — whether a PDF page cap truncated processing
 - `processed_page_count` — how many pages were actually processed
 - `max_pdf_pages` — the configured processing cap
-- `page_provenance` — one entry per processed page with `page_number`, `source`, `has_text`, and `text_length`
+- `ocr_average_score` — average score of the selected OCR page results when OCR ran
+- `ocr_passes_by_page` — OCR pass summaries per processed page when OCR ran
+- `page_provenance` — one entry per processed page with `page_number`, `source`, `has_text`, `text_length`, and OCR metadata when available
 
 Example `page_provenance`:
 

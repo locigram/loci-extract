@@ -6,12 +6,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import fitz
-import pytesseract
 from PIL import Image
 
 from app.capabilities import tesseract_available
 from app.chunking import build_chunks
 from app.extractors.base import BaseExtractor
+from app.ocr import extract_best_ocr_result
 from app.schemas import DocumentMetadata, ExtractionMethod, ExtractionPayload, ExtractionWarning, TextSegment
 
 
@@ -52,16 +52,15 @@ class PdfExtractor(BaseExtractor):
 
     def _extract_pdf_ocr(
         self, document: fitz.Document, *, max_pages: int | None = None
-    ) -> dict[int, str]:
-        ocr_pages: dict[int, str] = {}
+    ) -> dict[int, dict[str, object]]:
+        ocr_pages: dict[int, dict[str, object]] = {}
         for idx, page in enumerate(document, start=1):
             if max_pages is not None and idx > max_pages:
                 break
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             image = Image.open(BytesIO(pix.tobytes("png")))
-            text = pytesseract.image_to_string(image).strip()
-            if text:
-                ocr_pages[idx] = text
+            ocr_result = extract_best_ocr_result(image)
+            ocr_pages[idx] = ocr_result
         return ocr_pages
 
     def _build_page_outputs(
@@ -69,7 +68,7 @@ class PdfExtractor(BaseExtractor):
         *,
         processed_page_count: int,
         parser_pages: dict[int, str],
-        ocr_pages: dict[int, str] | None = None,
+        ocr_pages: dict[int, dict[str, object]] | None = None,
         prefer_ocr: bool = False,
         ocr_attempted: bool = False,
     ) -> tuple[list[str], list[TextSegment], list[dict[str, object]]]:
@@ -80,7 +79,10 @@ class PdfExtractor(BaseExtractor):
 
         for page_number in range(1, processed_page_count + 1):
             parser_text = parser_pages.get(page_number)
-            ocr_text = ocr_pages.get(page_number)
+            ocr_result = ocr_pages.get(page_number, {})
+            ocr_text = str(ocr_result.get("text") or "").strip() if isinstance(ocr_result, dict) else ""
+            ocr_score = float(ocr_result.get("score") or 0.0) if isinstance(ocr_result, dict) else 0.0
+            selected_pass = ocr_result.get("selected_pass") if isinstance(ocr_result, dict) else None
 
             if prefer_ocr and ocr_text:
                 source = "ocr"
@@ -98,18 +100,24 @@ class PdfExtractor(BaseExtractor):
                 source = "none"
                 text = None
 
-            provenance.append(
-                {
-                    "page_number": page_number,
-                    "source": source,
-                    "has_text": bool(text),
-                    "text_length": len(text) if text else 0,
-                }
-            )
+            provenance_entry: dict[str, object] = {
+                "page_number": page_number,
+                "source": source,
+                "has_text": bool(text),
+                "text_length": len(text) if text else 0,
+            }
+            if ocr_attempted:
+                provenance_entry["ocr_score"] = ocr_score
+                provenance_entry["selected_ocr_pass"] = selected_pass
+            provenance.append(provenance_entry)
 
             if not text:
                 continue
 
+            segment_metadata = {"source": source, "page_number": page_number}
+            if ocr_attempted:
+                segment_metadata["ocr_score"] = ocr_score
+                segment_metadata["selected_ocr_pass"] = selected_pass
             pages.append(text)
             segments.append(
                 TextSegment(
@@ -117,7 +125,7 @@ class PdfExtractor(BaseExtractor):
                     index=page_number,
                     label=f"page-{page_number}",
                     text=text,
-                    metadata={"source": source, "page_number": page_number},
+                    metadata=segment_metadata,
                 )
             )
 
@@ -212,10 +220,23 @@ class PdfExtractor(BaseExtractor):
                     ocr_attempted=True,
                 )
                 extra["page_provenance"] = page_provenance
+                ocr_scores = [entry.get("ocr_score", 0.0) for entry in page_provenance if isinstance(entry.get("ocr_score"), (int, float))]
+                extra["ocr_average_score"] = round(sum(ocr_scores) / len(ocr_scores), 2) if ocr_scores else 0.0
+                extra["ocr_passes_by_page"] = {
+                    str(page_number): ocr_result.get("ocr_passes", []) for page_number, ocr_result in ocr_pages.items()
+                }
 
                 if any(entry["source"] == "ocr" for entry in page_provenance):
                     extraction_status = "partial" if page_limit_applied else "success"
                     extra["result_source"] = "ocr"
+                    if extra["ocr_average_score"] < 10:
+                        warnings.append(
+                            ExtractionWarning(
+                                code="ocr_low_quality",
+                                message="OCR recovered text for this PDF, but the selected OCR results scored as low quality.",
+                            )
+                        )
+                        extraction_status = "partial"
                 elif any(entry["source"] == "parser_fallback" for entry in page_provenance):
                     extraction_status = "partial" if page_limit_applied else "success"
                     extra["result_source"] = "parser_fallback"

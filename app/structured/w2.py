@@ -5,7 +5,7 @@ import re
 from app.normalization import extract_last4, mask_identifier, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import get_text_lines, search_patterns
+from app.structured.common import first_source_pages, get_text_lines, search_patterns, snippet_around_match
 
 
 BOX_PATTERNS = {
@@ -37,20 +37,16 @@ def build_w2_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) 
     text = raw_payload.raw_text
     lines = get_text_lines(raw_payload)
 
-    employee_name = _extract_labeled_value(
-        text,
-        [
-            r"employee(?:'s)?\s+name(?:,\s*address,\s*and\s*zip\s*code)?\s*[:#-]?\s*([^\n]+)",
-            r"employee name\s*[:#-]?\s*([^\n]+)",
-        ],
-    )
-    employer_name = _extract_labeled_value(
-        text,
-        [
-            r"employer(?:'s)?\s+name\s*[:#-]?\s*([^\n]+)",
-            r"employer name\s*[:#-]?\s*([^\n]+)",
-        ],
-    )
+    employee_name_patterns = [
+        r"employee(?:'s)?\s+name(?:,\s*address,\s*and\s*zip\s*code)?\s*[:#-]?\s*([^\n]+)",
+        r"employee name\s*[:#-]?\s*([^\n]+)",
+    ]
+    employer_name_patterns = [
+        r"employer(?:'s)?\s+name\s*[:#-]?\s*([^\n]+)",
+        r"employer name\s*[:#-]?\s*([^\n]+)",
+    ]
+    employee_name = _extract_labeled_value(text, employee_name_patterns)
+    employer_name = _extract_labeled_value(text, employer_name_patterns)
     employer_ein = _extract_labeled_value(text, [r"employer identification number\s*[:#-]?\s*([\d-]+)"])
     employee_ssn_source = _extract_labeled_value(
         text,
@@ -80,6 +76,21 @@ def build_w2_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) 
     if boxes["2_federal_income_tax_withheld"] is None and re.search(r"federal income tax withheld", text, flags=re.IGNORECASE):
         validation_errors.append("unable_to_parse_2_federal_income_tax_withheld")
 
+    evidence = {
+        "source_pages": first_source_pages(raw_payload),
+        "employee_name": snippet_around_match(text, employee_name_patterns),
+        "employee_ssn": snippet_around_match(
+            text,
+            [
+                r"employee(?:'s)?\s+social security number\s*[:#-]?\s*([^\n]+)",
+                r"ssn\s*[:#-]?\s*([^\n]+)",
+            ],
+        ),
+        "employer_name": snippet_around_match(text, employer_name_patterns),
+        "box_1": snippet_around_match(text, BOX_PATTERNS["1_wages_tips_other_comp"]),
+        "box_2": snippet_around_match(text, BOX_PATTERNS["2_federal_income_tax_withheld"]),
+    }
+
     ssn_last4 = extract_last4(employee_ssn_source)
     fields = {
         "tax_year": _extract_tax_year(text),
@@ -96,6 +107,7 @@ def build_w2_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) 
         },
         "boxes": boxes,
         "state_local_entries": [],
+        "evidence": evidence,
     }
     review = build_review_metadata(
         required_fields={

@@ -27,6 +27,7 @@ def build_review_metadata(
     review_reasons: list[str] = []
     warning_codes = raw_extra.get("warning_codes") or []
     page_provenance = raw_extra.get("page_provenance") if isinstance(raw_extra.get("page_provenance"), list) else []
+    ocr_average_score = raw_extra.get("ocr_average_score")
 
     if missing_fields:
         review_reasons.append("missing_required_fields")
@@ -38,11 +39,25 @@ def build_review_metadata(
         review_reasons.append("no_text_recovered")
     if any(entry.get("source") == "none" for entry in page_provenance if isinstance(entry, dict)):
         review_reasons.append("pages_with_no_text")
+
     if document_type in TAX_REVIEW_DOC_TYPES:
         if raw_extra.get("result_source") in {"ocr", "parser_fallback"}:
             review_reasons.append("ocr_backed_tax_document")
         elif any(entry.get("source") in {"ocr", "parser_fallback"} for entry in page_provenance if isinstance(entry, dict)):
             review_reasons.append("ocr_backed_tax_document")
+
+        if isinstance(ocr_average_score, (int, float)) and ocr_average_score < 10:
+            review_reasons.append("low_ocr_quality_tax_document")
+        if any(
+            isinstance(entry, dict)
+            and entry.get("source") in {"ocr", "parser_fallback"}
+            and (
+                float(entry.get("ocr_score", 0.0) or 0.0) < 10
+                or int(entry.get("text_length", 0) or 0) < 20
+            )
+            for entry in page_provenance
+        ):
+            review_reasons.append("weak_ocr_evidence")
 
     deduped_reasons: list[str] = []
     for reason in review_reasons:

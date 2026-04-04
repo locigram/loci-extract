@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-import pytesseract
-from PIL import Image, ImageOps
+from PIL import Image
 
 from app.capabilities import tesseract_available
 from app.chunking import build_chunks
 from app.extractors.base import BaseExtractor
+from app.ocr import extract_best_ocr_result
 from app.schemas import (
     DocumentMetadata,
     ExtractionMethod,
@@ -26,26 +26,6 @@ class ImageOcrExtractor(BaseExtractor):
         return lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")) or mime_type.startswith(
             "image/"
         )
-
-    def _preprocess_image(self, image: Image.Image) -> tuple[Image.Image, dict[str, object]]:
-        original_mode = image.mode
-        processed = ImageOps.exif_transpose(image)
-        processed = processed.convert("L")
-        processed = ImageOps.autocontrast(processed)
-        processed = processed.point(lambda px: 255 if px > 180 else 0)
-        processed = processed.resize((processed.width * 2, processed.height * 2))
-        metadata = {
-            "original_mode": original_mode,
-            "processed_mode": processed.mode,
-            "preprocessing": [
-                "exif_transpose",
-                "grayscale",
-                "autocontrast",
-                "threshold",
-                "upscale_2x",
-            ],
-        }
-        return processed, metadata
 
     def extract(
         self,
@@ -109,22 +89,56 @@ class ImageOcrExtractor(BaseExtractor):
             )
 
         image = Image.open(file_path)
-        processed_image, preprocessing_metadata = self._preprocess_image(image)
-        extra.update(preprocessing_metadata)
-        extra["ocr_attempted"] = True
-        text = pytesseract.image_to_string(processed_image).strip()
+        ocr_result = extract_best_ocr_result(image)
+        extra.update(
+            {
+                "ocr_attempted": True,
+                "selected_ocr_pass": ocr_result["selected_pass"],
+                "ocr_score": ocr_result["score"],
+                "processed_mode": ocr_result["processed_mode"],
+                "preprocessing": ocr_result["preprocessing"],
+                "ocr_passes": ocr_result["ocr_passes"],
+            }
+        )
+
+        text = ocr_result["text"]
+        page_provenance = [
+            {
+                "page_number": 1,
+                "source": "ocr" if text else "none",
+                "has_text": bool(text),
+                "text_length": len(text),
+                "ocr_score": ocr_result["score"],
+                "selected_ocr_pass": ocr_result["selected_pass"],
+            }
+        ]
+        extra["page_provenance"] = page_provenance
+
         segments = [
             TextSegment(
                 type="page",
                 index=1,
                 label="image-1",
                 text=text,
-                metadata={"source": "ocr", "page_number": 1},
+                metadata={
+                    "source": "ocr",
+                    "page_number": 1,
+                    "ocr_score": ocr_result["score"],
+                    "selected_ocr_pass": ocr_result["selected_pass"],
+                },
             )
         ] if text else []
         status = "success" if text else "partial"
         if text:
             extra["result_source"] = "ocr"
+            if ocr_result["score"] < 10:
+                warnings.append(
+                    ExtractionWarning(
+                        code="ocr_low_quality",
+                        message="OCR detected text in the image, but the selected result scored as low quality.",
+                    )
+                )
+                status = "partial"
         else:
             warnings.append(
                 ExtractionWarning(

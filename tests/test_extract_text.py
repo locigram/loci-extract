@@ -205,7 +205,7 @@ def test_extract_xlsx_includes_row_level_table_segments() -> None:
 
 def test_extract_image_returns_ocr_metadata(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr('app.extractors.image_ocr.tesseract_available', lambda: True)
-    monkeypatch.setattr('app.extractors.image_ocr.pytesseract.image_to_string', lambda image: 'hello image')
+    monkeypatch.setattr('app.ocr.pytesseract.image_to_string', lambda image: 'hello image')
 
     image_path = tmp_path / 'scan.png'
     Image.new('RGB', (40, 40), color='white').save(image_path)
@@ -222,5 +222,6 @@ def test_extract_image_returns_ocr_metadata(monkeypatch, tmp_path) -> None:
     assert payload['extra']['ocr_attempted'] is True
     assert payload['extra']['result_source'] == 'ocr'
     assert payload['extra']['processed_mode'] == 'L'
-    assert 'threshold' in payload['extra']['preprocessing']
+    assert payload['extra']['selected_ocr_pass']
+    assert len(payload['extra']['ocr_passes']) >= 3
     assert payload['extra']['non_empty_page_count'] == 1
