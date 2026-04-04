@@ -290,6 +290,51 @@ curl -X POST http://127.0.0.1:8000/extract \
   -F "ocr_strategy=always"
 ```
 
+### Structured tax extraction
+
+Wave-1 structured tax extraction is available at `POST /extract/structured`.
+
+It currently supports:
+
+- W-2
+- 1099-NEC
+- receipts
+- 1040 package summaries
+
+Example W-2 request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/extract/structured \
+  -F "file=@./w2.pdf" \
+  -F "include_chunks=true" \
+  -F "ocr_strategy=always" \
+  -F "mask_pii=true"
+```
+
+Example receipt request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/extract/structured \
+  -F "file=@./receipt.jpg" \
+  -F "include_chunks=false" \
+  -F "ocr_strategy=always"
+```
+
+The structured response contains:
+
+- `classification` — detected document type and rule signals
+- `raw_extraction` — the full canonical `loci-extract` payload
+- `structured` — normalized wave-1 fields plus review metadata
+- `extra.mask_pii` — whether identifiers were masked in the structured output
+
+For OCR-heavy tax documents, the structured pipeline is intentionally conservative:
+
+- OCR-backed or parser-fallback tax pages add review reasons
+- missing required fields force `requires_human_review=true`
+- pages with no recovered text also force review
+
+This is deliberate: accuracy matters more than pretending low-quality OCR is trustworthy.
+
 ## Request fields
 
 ### `file`

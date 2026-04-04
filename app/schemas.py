@@ -5,6 +5,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+StructuredDocType = Literal["w2", "1099-nec", "receipt", "tax_return_package", "unknown"]
+
+
 class ExtractionOptions(BaseModel):
     include_chunks: bool = True
     ocr_strategy: Literal["auto", "always", "never"] = "auto"
@@ -52,4 +55,33 @@ class ExtractionPayload(BaseModel):
     raw_text: str
     segments: list[TextSegment] = Field(default_factory=list)
     chunks: list[Chunk] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClassificationResult(BaseModel):
+    doc_type: StructuredDocType
+    confidence: float = 0.0
+    strategy: Literal["rules", "hint"] = "rules"
+    matched_signals: list[str] = Field(default_factory=list)
+
+
+class ReviewMetadata(BaseModel):
+    requires_human_review: bool = False
+    review_reasons: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    validation_errors: list[str] = Field(default_factory=list)
+
+
+class StructuredDocument(BaseModel):
+    document_type: StructuredDocType
+    schema_version: str = "1.0"
+    fields: dict[str, Any] = Field(default_factory=dict)
+    review: ReviewMetadata = Field(default_factory=ReviewMetadata)
+
+
+class StructuredExtractionResponse(BaseModel):
+    document_id: str
+    classification: ClassificationResult
+    raw_extraction: ExtractionPayload
+    structured: StructuredDocument
     extra: dict[str, Any] = Field(default_factory=dict)

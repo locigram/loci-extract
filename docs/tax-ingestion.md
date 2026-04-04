@@ -868,6 +868,28 @@ It is a strong first benchmark without trying to solve the entire IRS universe a
 
 ---
 
+## Wave 1 status
+
+Wave 1 is now implemented with a review-aware structured endpoint:
+
+- `POST /extract/structured`
+
+Current supported structured types:
+
+- `w2`
+- `1099-nec`
+- `receipt`
+- `tax_return_package`
+
+Current behavior is intentionally conservative for OCR-heavy tax documents:
+
+- parser/OCR provenance from the raw extraction layer is preserved
+- OCR-backed tax documents are surfaced with review reasons instead of silent confidence
+- masking is enabled by default in structured output
+- the full raw extraction payload remains embedded for audit and reprocessing
+
+This is the correct starting posture for tax ingestion: preserve provenance, normalize deterministically, and require human review whenever OCR quality might compromise trust.
+
 ## Bottom line
 
 The right way to support tax-document ingestion is:
