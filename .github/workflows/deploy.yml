@@ -82,15 +82,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$DEPLOY_DIR/.env" <<EOF
-LOCI_EXTRACT_IMAGE=${{ steps.params.outputs.image_ref }}
-LOCI_EXTRACT_PORT=${{ steps.params.outputs.port }}
-WEB_CONCURRENCY=${{ steps.params.outputs.web_concurrency }}
-LOG_LEVEL=info
-TIMEOUT_KEEP_ALIVE=30
-LOCI_EXTRACT_MAX_UPLOAD_BYTES=26214400
-LOCI_EXTRACT_MAX_PDF_PAGES=200
-EOF
+          {
+            echo "LOCI_EXTRACT_IMAGE=${{ steps.params.outputs.image_ref }}"
+            echo "LOCI_EXTRACT_PORT=${{ steps.params.outputs.port }}"
+            echo "WEB_CONCURRENCY=${{ steps.params.outputs.web_concurrency }}"
+            echo "LOG_LEVEL=info"
+            echo "TIMEOUT_KEEP_ALIVE=30"
+            echo "LOCI_EXTRACT_MAX_UPLOAD_BYTES=26214400"
+            echo "LOCI_EXTRACT_MAX_PDF_PAGES=200"
+          } > "$DEPLOY_DIR/.env"
 
       - name: Pull and deploy
         shell: bash
