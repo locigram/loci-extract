@@ -1,0 +1,116 @@
+name: Deploy to SURU-DEVOPS
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  DEPLOY_DIR: /home/sudobot/services/loci-extract
+  DEFAULT_IMAGE_REF: ghcr.io/sudobot99/loci-extract:main
+  DEFAULT_PORT: '8000'
+  DEFAULT_WEB_CONCURRENCY: '2'
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: Docker image reference to deploy
+        required: false
+        default: ghcr.io/sudobot99/loci-extract:main
+      port:
+        description: Host port to expose
+        required: false
+        default: '8000'
+      web_concurrency:
+        description: Uvicorn worker count
+        required: false
+        default: '2'
+  workflow_run:
+    workflows: ["Publish Docker image"]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Linux, X64, suru-devops, loci-extract, docker]
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: loci-extract-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve deploy parameters
+        id: params
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            IMAGE_REF="${{ github.event.inputs.image_ref }}"
+            PORT="${{ github.event.inputs.port }}"
+            WEB_CONCURRENCY="${{ github.event.inputs.web_concurrency }}"
+          else
+            IMAGE_REF="$DEFAULT_IMAGE_REF"
+            PORT="$DEFAULT_PORT"
+            WEB_CONCURRENCY="$DEFAULT_WEB_CONCURRENCY"
+          fi
+          {
+            echo "image_ref=${IMAGE_REF:-$DEFAULT_IMAGE_REF}"
+            echo "port=${PORT:-$DEFAULT_PORT}"
+            echo "web_concurrency=${WEB_CONCURRENCY:-$DEFAULT_WEB_CONCURRENCY}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare deploy directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEPLOY_DIR"
+          cp compose.prod.yaml "$DEPLOY_DIR/compose.yaml"
+
+      - name: Write deploy environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$DEPLOY_DIR/.env" <<EOF
+LOCI_EXTRACT_IMAGE=${{ steps.params.outputs.image_ref }}
+LOCI_EXTRACT_PORT=${{ steps.params.outputs.port }}
+WEB_CONCURRENCY=${{ steps.params.outputs.web_concurrency }}
+LOG_LEVEL=info
+TIMEOUT_KEEP_ALIVE=30
+LOCI_EXTRACT_MAX_UPLOAD_BYTES=26214400
+LOCI_EXTRACT_MAX_PDF_PAGES=200
+EOF
+
+      - name: Pull and deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          docker compose pull
+          docker compose up -d
+
+      - name: Verify health
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT="${{ steps.params.outputs.port }}"
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f "$DEPLOY_DIR/compose.yaml" ps
+          docker compose -f "$DEPLOY_DIR/compose.yaml" logs --tail=100
+          exit 1

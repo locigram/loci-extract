@@ -1,0 +1,21 @@
+services:
+  loci-extract:
+    image: ${LOCI_EXTRACT_IMAGE:-ghcr.io/sudobot99/loci-extract:main}
+    container_name: loci-extract
+    restart: unless-stopped
+    ports:
+      - "${LOCI_EXTRACT_PORT:-8000}:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TIMEOUT_KEEP_ALIVE: ${TIMEOUT_KEEP_ALIVE:-30}
+      LOCI_EXTRACT_MAX_UPLOAD_BYTES: ${LOCI_EXTRACT_MAX_UPLOAD_BYTES:-26214400}
+      LOCI_EXTRACT_MAX_PDF_PAGES: ${LOCI_EXTRACT_MAX_PDF_PAGES:-200}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

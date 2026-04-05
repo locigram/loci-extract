@@ -62,6 +62,11 @@ The repo is set up to use a dedicated self-hosted GitHub Actions runner on `SURU
 
 The CI workflow runs the pytest suite and a Docker build + container smoke test on that runner.
 
+Additional workflows now support:
+
+- publishing images to `ghcr.io/sudobot99/loci-extract`
+- deploying the standalone container on `SURU-DEVOPS`
+
 ## Output model
 
 Every extractor returns the same top-level shape:
@@ -178,6 +183,47 @@ export LOCI_EXTRACT_MAX_UPLOAD_BYTES=52428800
 export LOCI_EXTRACT_MAX_PDF_PAGES=400
 docker compose up --build -d
 ```
+
+### Production image-based deployment
+
+The repo also includes `compose.prod.yaml` for image-based deployment from GHCR.
+That compose file is what the deploy workflow uses on `SURU-DEVOPS`.
+
+Manual example:
+
+```bash
+mkdir -p ~/services/loci-extract
+cp compose.prod.yaml ~/services/loci-extract/compose.yaml
+cat > ~/services/loci-extract/.env <<EOF
+LOCI_EXTRACT_IMAGE=ghcr.io/sudobot99/loci-extract:main
+LOCI_EXTRACT_PORT=8000
+WEB_CONCURRENCY=2
+LOG_LEVEL=info
+TIMEOUT_KEEP_ALIVE=30
+LOCI_EXTRACT_MAX_UPLOAD_BYTES=26214400
+LOCI_EXTRACT_MAX_PDF_PAGES=200
+EOF
+cd ~/services/loci-extract
+docker compose pull
+docker compose up -d
+```
+
+### Runtime tuning
+
+For OCR-heavy workloads, the main runtime tuning knobs are:
+
+- `WEB_CONCURRENCY` — uvicorn worker count; start with `2` on moderate hosts
+- `LOCI_EXTRACT_MAX_UPLOAD_BYTES` — reject oversized uploads earlier
+- `LOCI_EXTRACT_MAX_PDF_PAGES` — cap worst-case OCR/parser work for very large PDFs
+- `TIMEOUT_KEEP_ALIVE` — keepalive tuning for reverse-proxy/front-door setups
+
+Suggested starting points:
+
+- light usage: `WEB_CONCURRENCY=1`
+- mixed usage: `WEB_CONCURRENCY=2`
+- heavier CPU hosts: `WEB_CONCURRENCY=3` or `4`, then measure
+
+For OCR-heavy traffic, avoid blindly raising worker count too high — Tesseract/PDF OCR is CPU-bound, so too much concurrency can reduce throughput.
 
 ## Running the service
 
