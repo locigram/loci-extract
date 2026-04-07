@@ -11,12 +11,20 @@ def tesseract_available() -> bool:
     return command_available("tesseract")
 
 
+def ocrmypdf_available() -> bool:
+    return command_available("ocrmypdf")
+
+
+def ghostscript_available() -> bool:
+    return command_available("gs")
+
+
 def detect_capabilities() -> dict[str, object]:
     return {
         "ocr": {
             "tesseract": tesseract_available(),
-            "ocrmypdf": command_available("ocrmypdf"),
-            "ghostscript": command_available("gs"),
+            "ocrmypdf": ocrmypdf_available(),
+            "ghostscript": ghostscript_available(),
         },
         "pdf": {
             "pdftoppm": command_available("pdftoppm"),

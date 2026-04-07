@@ -31,7 +31,9 @@ def test_invalid_ocr_strategy_rejected() -> None:
     assert 'Invalid ocr_strategy' in response.json()['detail']
 
 
-def test_blank_pdf_reports_ocr_unavailable() -> None:
+def test_blank_pdf_reports_ocr_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: False)
+    monkeypatch.setattr('app.extractors.pdf.ocrmypdf_available', lambda: False)
     document = fitz.open()
     document.new_page()
     pdf_bytes = document.tobytes()
@@ -60,7 +62,9 @@ def test_blank_pdf_reports_ocr_unavailable() -> None:
     ]
 
 
-def test_pdf_text_layer_with_always_strategy_reports_parser_result_source_when_ocr_unavailable() -> None:
+def test_pdf_text_layer_with_always_strategy_reports_parser_result_source_when_ocr_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: False)
+    monkeypatch.setattr('app.extractors.pdf.ocrmypdf_available', lambda: False)
     document = fitz.open()
     page = document.new_page()
     page.insert_text((72, 72), 'parser text')
@@ -88,7 +92,9 @@ def test_pdf_text_layer_with_always_strategy_reports_parser_result_source_when_o
     ]
 
 
-def test_blank_pdf_with_never_strategy_reports_disabled_without_attempting_ocr() -> None:
+def test_blank_pdf_with_never_strategy_reports_disabled_without_attempting_ocr(monkeypatch) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: False)
+    monkeypatch.setattr('app.extractors.pdf.ocrmypdf_available', lambda: False)
     document = fitz.open()
     document.new_page()
     pdf_bytes = document.tobytes()

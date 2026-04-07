@@ -7,6 +7,7 @@ from PIL import Image
 from app.extractors.image_ocr import ImageOcrExtractor
 from app.extractors.pdf import PdfExtractor
 from app.main import app
+from app.ocr import extract_best_ocr_result
 
 
 client = TestClient(app)
@@ -59,6 +60,23 @@ def test_image_ocr_uses_best_pass_and_records_quality(monkeypatch, tmp_path: Pat
     assert payload.extra['page_provenance'][0]['selected_ocr_pass'] == 'soft_upscale'
 
 
+def test_extract_best_ocr_result_prefers_rotated_variant(monkeypatch) -> None:
+    def fake_image_to_string(image):
+        if getattr(image, '_ocr_rotation', 0) == 90:
+            return 'rotated tax statement wages withheld employee name'
+        return ' '
+
+    monkeypatch.setattr('app.ocr.pytesseract.image_to_string', fake_image_to_string)
+    monkeypatch.setattr('app.ocr.pytesseract.image_to_data', lambda *args, **kwargs: {'text': []})
+
+    result = extract_best_ocr_result(Image.new('RGB', (120, 60), color='white'))
+
+    assert result['selected_pass'] == 'soft_upscale_rot90'
+    assert result['selected_rotation'] == 90
+    assert any(pass_result['rotation_degrees'] == 90 for pass_result in result['ocr_passes'])
+
+
+
 def test_pdf_extractor_uses_ocr_fallback_when_available(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: True)
     monkeypatch.setattr('app.ocr.pytesseract.image_to_string', lambda image: 'ocr text')
@@ -108,6 +126,7 @@ def test_pdf_extractor_always_uses_ocr_when_requested(monkeypatch, tmp_path: Pat
             'text_length': 17,
             'ocr_score': payload.extra['page_provenance'][0]['ocr_score'],
             'selected_ocr_pass': payload.extra['page_provenance'][0]['selected_ocr_pass'],
+            'selected_ocr_rotation': payload.extra['page_provenance'][0]['selected_ocr_rotation'],
         }
     ]
     assert payload.extra['page_provenance'][0]['ocr_score'] > 0
@@ -168,6 +187,91 @@ def test_pdf_extractor_tracks_mixed_page_provenance_for_always_ocr(monkeypatch, 
     assert payload.extra['page_provenance'][0]['ocr_score'] == 22.0
     assert payload.extra['page_provenance'][1]['ocr_score'] == 0.0
     assert [segment.metadata['source'] for segment in payload.segments] == ['ocr', 'parser_fallback']
+
+
+def test_pdf_extractor_detects_glyph_garbage_parser_output() -> None:
+    extractor = PdfExtractor()
+    assert extractor._looks_like_glyph_garbage('normal readable financial statement text') is False
+    assert extractor._looks_like_glyph_garbage('\u0013*() *,$ +\u0005 \u001d0.:,1\u0001%011)8\u0001\u001343+42030:2\u0001\u0011884*0)9043') is True
+    assert extractor._looks_like_glyph_garbage('(cid:6)(cid:30)(cid:30)(cid:40)(cid:45)(cid:39)(cid:44) (cid:17)(cid:45)(cid:38)(cid:29)') is True
+
+
+
+def test_pdf_extractor_auto_uses_ocrmypdf_for_glyph_garbage(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr('app.extractors.pdf.tesseract_available', lambda: True)
+    monkeypatch.setattr('app.extractors.pdf.ocrmypdf_available', lambda: True)
+
+    pdf_path = tmp_path / 'glyph-garbage.pdf'
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), 'parser text that will be replaced')
+    document.save(pdf_path)
+    document.close()
+
+    extractor = PdfExtractor()
+    monkeypatch.setattr(extractor, '_extract_pdf_text', lambda document, max_pages=None: {1: '(cid:6)(cid:30)(cid:30)(cid:40)(cid:45)(cid:39)(cid:44)'})
+    monkeypatch.setattr(extractor, '_extract_pdf_tables', lambda file_path, max_pages=None: {})
+
+    rerouted_pdf = tmp_path / 'rerouted.pdf'
+    rerouted_pdf.write_bytes(pdf_path.read_bytes())
+    monkeypatch.setattr(extractor, '_run_ocrmypdf_fallback', lambda file_path: rerouted_pdf)
+
+    parser_calls = {'count': 0}
+
+    def fake_extract_text(document, max_pages=None):
+        parser_calls['count'] += 1
+        if parser_calls['count'] == 1:
+            return {1: '(cid:6)(cid:30)(cid:30)(cid:40)(cid:45)(cid:39)(cid:44)'}
+        return {1: 'Balance Sheet readable after OCRmyPDF'}
+
+    monkeypatch.setattr(extractor, '_extract_pdf_text', fake_extract_text)
+
+    payload = extractor.extract(pdf_path, 'glyph-garbage.pdf', 'application/pdf', ocr_strategy='auto')
+
+    assert payload.extraction.status == 'success'
+    assert payload.extraction.ocr_used is True
+    assert payload.raw_text == 'Balance Sheet readable after OCRmyPDF'
+    assert payload.extra['result_source'] == 'ocrmypdf'
+    assert payload.extra['ocr_backend'] == 'ocrmypdf'
+    assert payload.extra['ocr_attempted'] is True
+    assert payload.extra['ocrmypdf_trigger_reason'] == 'parser_glyph_garbage'
+    assert payload.extra['page_provenance'][0]['source'] == 'ocrmypdf'
+    assert payload.segments[0].metadata['source'] == 'ocrmypdf'
+
+
+
+def test_pdf_extractor_surfaces_pdfplumber_table_segments(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / 'basic-table.pdf'
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), 'Quarterly summary')
+    document.save(pdf_path)
+    document.close()
+
+    class FakePdfPage:
+        def extract_tables(self):
+            return [[['Name', 'Role'], ['Drew', 'Admin']]]
+
+    class FakePdf:
+        pages = [FakePdfPage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr('app.extractors.pdf.pdfplumber.open', lambda *args, **kwargs: FakePdf())
+
+    payload = PdfExtractor().extract(pdf_path, 'basic-table.pdf', 'application/pdf')
+
+    table_segments = [segment for segment in payload.segments if segment.type == 'table']
+    assert payload.extraction.status == 'success'
+    assert len(table_segments) == 1
+    assert table_segments[0].text == 'Name | Role\nDrew | Admin'
+    assert table_segments[0].metadata['page_number'] == 1
+    assert table_segments[0].metadata['detection_method'] == 'pdfplumber'
+
 
 
 def test_pdf_extractor_marks_low_quality_ocr_as_partial(monkeypatch, tmp_path: Path) -> None:

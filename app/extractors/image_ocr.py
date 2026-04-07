@@ -94,6 +94,7 @@ class ImageOcrExtractor(BaseExtractor):
             {
                 "ocr_attempted": True,
                 "selected_ocr_pass": ocr_result["selected_pass"],
+                "selected_ocr_rotation": ocr_result.get("selected_rotation", 0),
                 "ocr_score": ocr_result["score"],
                 "processed_mode": ocr_result["processed_mode"],
                 "preprocessing": ocr_result["preprocessing"],
@@ -110,6 +111,7 @@ class ImageOcrExtractor(BaseExtractor):
                 "text_length": len(text),
                 "ocr_score": ocr_result["score"],
                 "selected_ocr_pass": ocr_result["selected_pass"],
+                "selected_ocr_rotation": ocr_result.get("selected_rotation", 0),
             }
         ]
         extra["page_provenance"] = page_provenance
@@ -125,6 +127,7 @@ class ImageOcrExtractor(BaseExtractor):
                     "page_number": 1,
                     "ocr_score": ocr_result["score"],
                     "selected_ocr_pass": ocr_result["selected_pass"],
+                    "selected_ocr_rotation": ocr_result.get("selected_rotation", 0),
                 },
             )
         ] if text else []
