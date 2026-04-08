@@ -22,6 +22,14 @@ on:
         description: Uvicorn worker count
         required: false
         default: '2'
+      enable_gpu:
+        description: Enable Docker GPU passthrough override
+        required: false
+        default: 'false'
+      gpu_request:
+        description: "GPU request value for compose.gpu.yaml (for example: all, 1, device=0)"
+        required: false
+        default: 'all'
   workflow_run:
     workflows: ["Publish Docker image"]
     types: [completed]
@@ -53,15 +61,21 @@ jobs:
             IMAGE_REF="${{ github.event.inputs.image_ref }}"
             PORT="${{ github.event.inputs.port }}"
             WEB_CONCURRENCY="${{ github.event.inputs.web_concurrency }}"
+            ENABLE_GPU="${{ github.event.inputs.enable_gpu }}"
+            GPU_REQUEST="${{ github.event.inputs.gpu_request }}"
           else
             IMAGE_REF="$DEFAULT_IMAGE_REF"
             PORT="$DEFAULT_PORT"
             WEB_CONCURRENCY="$DEFAULT_WEB_CONCURRENCY"
+            ENABLE_GPU="false"
+            GPU_REQUEST="all"
           fi
           {
             echo "image_ref=${IMAGE_REF:-$DEFAULT_IMAGE_REF}"
             echo "port=${PORT:-$DEFAULT_PORT}"
             echo "web_concurrency=${WEB_CONCURRENCY:-$DEFAULT_WEB_CONCURRENCY}"
+            echo "enable_gpu=${ENABLE_GPU:-false}"
+            echo "gpu_request=${GPU_REQUEST:-all}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
@@ -77,6 +91,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$DEPLOY_DIR"
           cp compose.prod.yaml "$DEPLOY_DIR/compose.yaml"
+          cp compose.gpu.yaml "$DEPLOY_DIR/compose.gpu.yaml"
 
       - name: Write deploy environment
         shell: bash
@@ -90,6 +105,9 @@ jobs:
             echo "TIMEOUT_KEEP_ALIVE=30"
             echo "LOCI_EXTRACT_MAX_UPLOAD_BYTES=26214400"
             echo "LOCI_EXTRACT_MAX_PDF_PAGES=200"
+            echo "LOCI_EXTRACT_GPU_REQUEST=${{ steps.params.outputs.gpu_request }}"
+            echo "NVIDIA_VISIBLE_DEVICES=all"
+            echo "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
           } > "$DEPLOY_DIR/.env"
 
       - name: Pull and deploy
@@ -97,8 +115,12 @@ jobs:
         run: |
           set -euo pipefail
           cd "$DEPLOY_DIR"
-          docker compose pull
-          docker compose up -d
+          COMPOSE_FILES=( -f compose.yaml )
+          if [ "${{ steps.params.outputs.enable_gpu }}" = "true" ]; then
+            COMPOSE_FILES+=( -f compose.gpu.yaml )
+          fi
+          docker compose "${COMPOSE_FILES[@]}" pull
+          docker compose "${COMPOSE_FILES[@]}" up -d
 
       - name: Verify health
         shell: bash

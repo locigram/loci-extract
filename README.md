@@ -142,6 +142,7 @@ Those are not required for the current scaffold.
 
 - `tesseract-ocr`
 - `ocrmypdf`
+- `unpaper`
 - `poppler-utils`
 - `ghostscript`
 
@@ -190,6 +191,8 @@ docker compose up --build -d
 The repo also includes `compose.prod.yaml` for image-based deployment from GHCR.
 That compose file is what the deploy workflow uses on `SURU-DEVOPS`.
 
+For optional GPU passthrough, the repo also includes `compose.gpu.yaml`. The current OCR stack is still primarily CPU-bound, but this override makes the container GPU-visible for future GPU-backed OCR/inference components or host-side acceleration experiments.
+
 Manual example:
 
 ```bash
@@ -208,6 +211,19 @@ cd ~/services/loci-extract
 docker compose pull
 docker compose up -d
 ```
+
+Optional GPU-enabled deployment example:
+
+```bash
+cd ~/services/loci-extract
+docker compose -f compose.yaml -f /path/to/compose.gpu.yaml up -d
+```
+
+GPU override envs:
+
+- `LOCI_EXTRACT_GPU_REQUEST` — Docker Compose GPU request value, default `all`
+- `NVIDIA_VISIBLE_DEVICES` — default `all`
+- `NVIDIA_DRIVER_CAPABILITIES` — default `compute,utility`
 
 ### Runtime tuning
 

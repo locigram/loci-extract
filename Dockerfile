@@ -17,6 +17,7 @@ RUN apt-get update \
         ocrmypdf \
         poppler-utils \
         tesseract-ocr \
+        unpaper \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
