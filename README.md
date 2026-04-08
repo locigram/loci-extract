@@ -141,6 +141,7 @@ Those are not required for the current scaffold.
 `loci-extract` now ships with a standalone container build that includes the current OCR/PDF system dependencies:
 
 - `tesseract-ocr`
+- `ocrmypdf`
 - `poppler-utils`
 - `ghostscript`
 

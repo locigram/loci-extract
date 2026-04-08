@@ -14,6 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ghostscript \
+        ocrmypdf \
         poppler-utils \
         tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
