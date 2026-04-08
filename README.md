@@ -59,6 +59,276 @@ That means one service can:
 
 This keeps downstream systems focused on search, storage, classification, or knowledge ingestion instead of file parsing.
 
+## Product goals and working direction
+
+This section is intentionally detailed so future work can continue cleanly in Claude Code or any other coding environment without needing to reconstruct the project intent from chat history.
+
+### Primary goals
+
+`loci-extract` is meant to become a reusable, high-fidelity document extraction service that can handle both generic business documents and specialized tax / financial documents.
+
+The most important goals are:
+
+1. **Preserve full document context by default**
+   - keep canonical `raw_text`
+   - keep page / table / paragraph / sheet structure in `segments`
+   - keep provenance and warnings in `extra`
+   - do not optimize for compact LLM-only payloads by default
+
+2. **Extract the correct data from important forms**
+   - prioritize field accuracy for W-2s, 1099s, receipts, tax-return packages, and financial statements
+   - structured output should be conservative when OCR quality is weak
+   - uncertain fields should be flagged for review instead of silently trusted
+
+3. **Handle messy real-world PDFs and scans**
+   - scanned PDFs with no text layer
+   - PDFs with broken or garbage text layers
+   - mixed portrait / landscape pages
+   - documents where OCR quality varies page by page
+
+4. **Produce outputs that are useful both for humans and downstream systems**
+   - full-fidelity raw extraction for auditability
+   - schema-first structured extraction for known form types
+   - row-oriented / CSV-friendly outputs for financial data
+
+5. **Support future document-aware OCR routing**
+   - identify likely document type early
+   - choose the most appropriate OCR / extraction profile based on form type or layout
+   - use different extraction strategies for tax forms, receipts, and financial statements
+
+### Non-goals / things to avoid
+
+- Do not collapse the service into a tiny summary-only API.
+- Do not pretend low-quality OCR is trustworthy.
+- Do not require exact visual table reconstruction before emitting useful financial data.
+- Do not tightly couple extraction to one downstream app; keep the service reusable.
+
+## What “good” looks like
+
+### For generic extraction
+
+Good output means:
+
+- readable `raw_text`
+- useful structural `segments`
+- chunks that can feed retrieval pipelines
+- explicit warnings when extraction is partial or weak
+
+### For tax forms
+
+Good output means correctly extracting important fields such as:
+
+- form type
+- payer / employer
+- recipient / employee
+- EIN / TIN / SSN (masked when requested)
+- tax year
+- box values, wages, withholding, compensation, totals
+- evidence snippets and review metadata
+
+### For financial documents
+
+Good output means:
+
+- preserving the full page text
+- reconstructing meaningful row-oriented records
+- identifying sections, totals, and subtotals
+- being exportable or trivially transformable into CSV
+
+For financial data, **semantic rows are more important than perfect visual table reproduction**.
+
+## Document types: current support and target support
+
+### Currently supported extraction inputs
+
+- PDF
+- DOCX
+- XLSX
+- PNG
+- JPG / JPEG
+- TIFF
+- WEBP
+- TXT
+- MD
+- CSV
+- JSON
+
+### Currently recognized structured document types
+
+- `w2`
+- `1099-nec`
+- `receipt`
+- `tax_return_package`
+- `financial_statement`
+- `unknown`
+
+### Important document families this project should handle well
+
+#### Tax forms and tax-related documents
+
+- W-2
+- 1099-NEC
+- 1040 / tax return package summaries
+- receipts
+- other tax forms as they are added later
+
+#### Financial and accounting documents
+
+- balance sheets
+- financial statements
+- account listings
+- reserve / capital schedules
+- row-oriented accounting exports that may originate as PDFs
+
+#### General office / business documents
+
+- contracts
+- letters
+- spreadsheets
+- narrative PDFs and scanned correspondence
+
+## Features needed for the target system
+
+### Extraction foundation
+
+- parser-first extraction with deterministic behavior
+- OCR fallback when parser text is missing or unusable
+- page-level provenance showing where text came from
+- stable warnings and quality metadata
+- configurable size / page guardrails
+
+### OCR and preprocessing
+
+- multi-pass OCR preprocessing
+- mixed-orientation handling
+- OCRmyPDF fallback for parser-garbage PDFs
+- per-page selected pass / selected rotation provenance
+- future OCR profiles by document type
+
+### Document identification
+
+This is a high-value next step.
+
+Desired behavior:
+
+- identify likely document type from image/layout/title cues, not only post-OCR text rules
+- recognize common forms such as W-2 and 1099 from the page image
+- use that identification to choose an OCR/extraction strategy
+- return identification confidence and detection metadata
+
+### Structured extraction
+
+- schema-first outputs for tax forms
+- row-oriented outputs for financial statements
+- totals / subtotals extraction for financial docs
+- evidence snippets and review metadata for extracted fields
+- conservative review flags when OCR evidence is weak
+
+### Financial-data outputs
+
+Desired outputs for financial statements include:
+
+- normalized line items
+- section labels
+- total / subtotal flags
+- page references
+- JSON that is easy to convert to CSV
+- optional direct CSV export later
+
+### Review / trust controls
+
+- confidence-aware handling of weak OCR
+- explicit `requires_human_review` behavior for risky cases
+- field-level or row-level ambiguity flags where needed
+- no silent overconfidence on low-quality scans
+
+## Technology and tools in use
+
+### Core application stack
+
+- **Python**
+- **FastAPI** for the HTTP API
+- **Pydantic** for schemas and response models
+- **pytest** for tests
+
+### Extraction and document libraries
+
+- **PyMuPDF (`fitz`)** for primary PDF text extraction and PDF rendering
+- **pdfplumber** for basic PDF table extraction
+- **python-docx** for DOCX extraction
+- **openpyxl** for XLSX extraction
+- built-in text handling for plain-text formats
+
+### OCR and PDF helper tools
+
+- **Tesseract** for image OCR and scanned-page OCR
+- **OCRmyPDF** for parser-garbage / force-OCR PDF fallback
+- **Ghostscript** as an OCRmyPDF dependency / PDF helper
+- **unpaper** for PDF page cleanup in OCRmyPDF runs
+- **poppler-utils** for PDF helper binaries such as `pdftoppm` / `pdfinfo`
+- **Pillow (PIL)** for image preprocessing
+
+### Deployment and operations
+
+- **Docker** for containerized runtime
+- **Docker Compose** for local/prod orchestration
+- **GHCR** for image publishing
+- **GitHub Actions** on the self-hosted `SURU-DEVOPS` runner for CI/publish/deploy
+- optional **GPU-enabled Compose override** for future GPU-aware OCR/inference additions
+
+## Current architecture summary
+
+The current service has three practical layers:
+
+1. **Canonical extraction layer**
+   - `raw_text`
+   - `segments`
+   - `chunks`
+   - extraction warnings and provenance
+
+2. **Classification / document typing layer**
+   - currently mostly rule-based from extracted text
+   - should evolve toward image/layout-aware document identification
+
+3. **Structured interpretation layer**
+   - W-2
+   - 1099-NEC
+   - receipt
+   - tax return package
+   - financial statement
+
+The intended evolution is to keep layer 1 stable and full-fidelity, while making layers 2 and 3 smarter and more document-aware.
+
+## Recommended next milestones
+
+If continuing this project later in Claude Code, the highest-value next milestones are:
+
+1. **Document identification before final extraction**
+   - classify likely form type from page image/layout/title cues
+   - return confidence and selected OCR profile
+
+2. **OCR profile routing by document family**
+   - generic document
+   - tax form
+   - financial statement
+   - receipt
+
+3. **CSV-friendly financial extraction**
+   - stronger row reconstruction
+   - totals / subtotals
+   - cleaner section assignment
+   - optional CSV export endpoint or artifact
+
+4. **Higher-confidence tax form extraction**
+   - stronger W-2 / 1099 validation
+   - better evidence capture
+   - more document families over time
+
+5. **Review / confidence enhancements**
+   - field-level confidence
+   - row-level ambiguity flags
+   - more explicit reasons for human review
+
 ## CI
 
 The repo is set up to use a dedicated self-hosted GitHub Actions runner on `SURU-DEVOPS` with labels:
