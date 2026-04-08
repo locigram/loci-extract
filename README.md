@@ -11,11 +11,18 @@ Standalone document extraction and OCR-oriented ingestion service for ephemeral 
 
 The service is designed to be reusable across systems, including but not limited to Locigram.
 
+By design, the default extraction output is **full-context and audit-friendly**, not a compact LLM summary. The main payload preserves:
+
+- canonical full extracted text in `raw_text`
+- structural context in `segments`
+- optional retrieval chunks in `chunks`
+- OCR / parser provenance in `extra`
+
 ## Current capabilities
 
 Supported file types today:
 
-- PDF via **PyMuPDF**
+- PDF via **PyMuPDF** + **pdfplumber** table extraction + OCR fallback paths
 - DOCX via **python-docx** (paragraphs and tables)
 - XLSX via **openpyxl** (sheet summaries plus row-level provenance)
 - PNG / JPG / JPEG / TIFF / WEBP via **Tesseract**
@@ -26,8 +33,11 @@ Current status:
 - parser-first extraction is implemented
 - image OCR is implemented through Tesseract when the `tesseract` binary is available, with multi-pass preprocessing and best-pass selection
 - PDF text extraction is implemented through PyMuPDF
+- basic PDF table extraction is implemented through pdfplumber and emitted as `segments[type="table"]` when detected
 - scanned-PDF OCR fallback is implemented through a conditional Tesseract path when no PDF text layer is present, using multi-pass OCR selection per page
+- parser-garbage PDF fallback is implemented through OCRmyPDF when the PDF has a broken text layer (for example `(cid:...)` junk or high control-character density)
 - PDF `ocr_strategy=always` is supported, with page-level provenance metadata
+- OCR selection now records the chosen preprocessing pass and selected rotation for mixed portrait / landscape pages
 - DOCX extraction preserves paragraphs, headings/list-item structure, and tables
 - XLSX extraction preserves sheet summaries plus row-level provenance
 - when OCR dependencies are missing, the API returns structured warnings instead of crashing
@@ -101,6 +111,8 @@ Key idea:
 - `segments` preserve local structure
 - `chunks` are derived artifacts for retrieval pipelines
 
+This is intentional: `loci-extract` is optimized to preserve the full parsed document context first, then layer structured interpretation on top.
+
 ## Installation
 
 ### 1. Create a virtualenv
@@ -128,13 +140,14 @@ sudo apt-get update
 sudo apt-get install -y tesseract-ocr
 ```
 
-Optional future PDF OCR path may also use tools like:
+Additional PDF OCR helpers used by the current service:
 
 - `ocrmypdf`
-- `tesseract-ocr`
 - `ghostscript`
+- `unpaper`
+- `poppler-utils`
 
-Those are not required for the current scaffold.
+These are included in the Docker image and are strongly recommended for production PDF handling.
 
 ## Docker
 
@@ -395,6 +408,32 @@ For parser-garbage PDFs with broken text layers, `ocr_strategy=auto` can now pro
 - `extra.ocr_backend = "ocrmypdf"`
 - `extra.ocrmypdf_trigger_reason = "parser_glyph_garbage"`
 
+Useful trigger heuristics for this path include:
+
+- repeated `(cid:...)` glyph junk from the PDF text layer
+- high control-character density in parser output
+- parser text that exists but is clearly not usable as real document text
+
+### Inspect extracted table segments
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/extract \
+  -F "file=@./financials.pdf" \
+  -F "include_chunks=true" \
+  -F "ocr_strategy=auto" \
+  | jq '.segments[] | select(.type == "table")'
+```
+
+Table segments currently include metadata such as:
+
+- `page_number`
+- `page_table_index`
+- `row_count`
+- `column_count`
+- `detection_method`
+
+If the document is OCR-backed and native PDF table extraction does not find anything, the service can also emit OCR-derived table candidates using an `ocr_word_grid` detection path.
+
 ### Extract a PDF from Python
 
 ```python
@@ -480,6 +519,23 @@ For financial statements, the structured payload currently includes:
 - `line_items`
 - `sections`
 - evidence snippets pointing back to the raw extraction
+
+Financial-statement `line_items` currently include fields such as:
+
+- `page_number`
+- `account_number`
+- `account_name`
+- `balance`
+- `section`
+- `is_total`
+
+Financial-statement `sections` currently summarize:
+
+- `name`
+- `line_item_count`
+- `total_line_item_count`
+
+This structured layer sits on top of the full raw extraction, not instead of it. The canonical `raw_extraction.raw_text` and `raw_extraction.segments` are still returned intact.
 
 For OCR-heavy tax documents, the structured pipeline is intentionally conservative:
 
@@ -587,6 +643,9 @@ For PDFs specifically, `extra` also reports:
 - `ocr_average_score` — average score of the selected OCR page results when OCR ran
 - `ocr_passes_by_page` — OCR pass summaries per processed page when OCR ran
 - `page_provenance` — one entry per processed page with `page_number`, `source`, `has_text`, `text_length`, and OCR metadata when available
+- `ocr_quality_summary` — stable OCR review summary with average/min/max score, weak pages, and low-quality flagging
+- `ocr_evidence_snippets` — short source snippets for review/audit consumers
+- `selected_ocr_rotation` / `selected_ocr_pass` — page-level OCR provenance when OCR was used
 
 Example `page_provenance`:
 
