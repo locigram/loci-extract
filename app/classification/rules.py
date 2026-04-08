@@ -7,6 +7,7 @@ SUPPORTED_DOC_TYPES: tuple[StructuredDocType, ...] = (
     "1099-nec",
     "receipt",
     "tax_return_package",
+    "financial_statement",
     "unknown",
 )
 
@@ -63,6 +64,10 @@ def classify_document(
             strategy="rules",
             matched_signals=matched_signals,
         )
+
+    financial_signals = [signal for signal in ("balance sheet", "account number", "account name", "accounting basis", "liabilities & capital") if signal in text]
+    if "balance sheet" in financial_signals and len(financial_signals) >= 2:
+        return ClassificationResult(doc_type="financial_statement", confidence=0.93, strategy="rules", matched_signals=financial_signals)
 
     receipt_signals = [signal for signal in ("subtotal", "tax", "total", "receipt", "visa", "mastercard", "amex", "change") if signal in text]
     if "total" in receipt_signals and len(receipt_signals) >= 2:

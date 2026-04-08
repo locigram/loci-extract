@@ -379,6 +379,22 @@ curl -s -X POST http://127.0.0.1:8000/extract \
   | jq '.extra.page_provenance'
 ```
 
+### Inspect OCR backend selection and OCRmyPDF fallback metadata
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/extract \
+  -F "file=@./financials.pdf" \
+  -F "include_chunks=true" \
+  -F "ocr_strategy=auto" \
+  | jq '{result_source: .extra.result_source, ocr_backend: .extra.ocr_backend, ocrmypdf_trigger_reason: .extra.ocrmypdf_trigger_reason, parser_quality_issue: .extra.parser_quality_issue}'
+```
+
+For parser-garbage PDFs with broken text layers, `ocr_strategy=auto` can now promote the extraction to an OCRmyPDF preprocessing path automatically. In those cases the API explicitly reports:
+
+- `extra.result_source = "ocrmypdf"`
+- `extra.ocr_backend = "ocrmypdf"`
+- `extra.ocrmypdf_trigger_reason = "parser_glyph_garbage"`
+
 ### Extract a PDF from Python
 
 ```python
@@ -427,6 +443,7 @@ It currently supports:
 - 1099-NEC
 - receipts
 - 1040 package summaries
+- financial statements / balance sheets
 
 Example W-2 request:
 
@@ -451,8 +468,18 @@ The structured response contains:
 
 - `classification` — detected document type and rule signals
 - `raw_extraction` — the full canonical `loci-extract` payload
-- `structured` — normalized wave-1 fields plus review metadata
+- `structured` — normalized fields plus review metadata
 - `extra.mask_pii` — whether identifiers were masked in the structured output
+
+For financial statements, the structured payload currently includes:
+
+- `report_type`
+- `organization_name`
+- `statement_date`
+- `accounting_basis`
+- `line_items`
+- `sections`
+- evidence snippets pointing back to the raw extraction
 
 For OCR-heavy tax documents, the structured pipeline is intentionally conservative:
 

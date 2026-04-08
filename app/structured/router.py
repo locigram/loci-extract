@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.schemas import ClassificationResult, ExtractionPayload, StructuredDocument
 from app.structured.common import unknown_structured_document
+from app.structured.financial_statement import build_financial_statement_document
 from app.structured.form_1099_nec import build_1099_nec_document
 from app.structured.receipt import build_receipt_document
 from app.structured.tax_return_package import build_tax_return_package_document
@@ -22,4 +23,6 @@ def build_structured_document(
         return build_receipt_document(raw_payload, mask_pii=mask_pii)
     if classification.doc_type == "tax_return_package":
         return build_tax_return_package_document(raw_payload, mask_pii=mask_pii)
+    if classification.doc_type == "financial_statement":
+        return build_financial_statement_document(raw_payload, mask_pii=mask_pii)
     return unknown_structured_document()

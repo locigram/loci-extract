@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-StructuredDocType = Literal["w2", "1099-nec", "receipt", "tax_return_package", "unknown"]
+StructuredDocType = Literal["w2", "1099-nec", "receipt", "tax_return_package", "financial_statement", "unknown"]
 
 
 class ExtractionOptions(BaseModel):
