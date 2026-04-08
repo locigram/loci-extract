@@ -50,6 +50,8 @@ def _organization_name(lines: list[str]) -> str | None:
     for line in lines:
         if "properties:" in line.lower():
             candidate = line.split(":", 1)[1].strip()
+            if " - " in candidate:
+                candidate = candidate.split(" - ", 1)[0].strip()
             return candidate or None
     return None
 
@@ -78,6 +80,7 @@ def _is_section_heading(normalized: str) -> bool:
 def _extract_line_items(page_lines: list[list[str]]) -> list[dict[str, object]]:
     account_numbers: list[str] = []
     account_names: list[str] = []
+    account_sections: list[str | None] = []
     balances: list[float] = []
     current_section: str | None = None
     line_items: list[dict[str, object]] = []
@@ -115,6 +118,7 @@ def _extract_line_items(page_lines: list[list[str]]) -> list[dict[str, object]]:
                     current_section = normalized.title()
                     continue
                 account_names.append(normalized)
+                account_sections.append(current_section)
                 continue
 
             if in_balances and _BALANCE_RE.match(line):
@@ -132,7 +136,7 @@ def _extract_line_items(page_lines: list[list[str]]) -> list[dict[str, object]]:
                     "account_number": account_numbers[idx],
                     "account_name": account_names[idx],
                     "balance": balances[idx],
-                    "section": current_section,
+                    "section": account_sections[idx] if idx < len(account_sections) else None,
                 }
             )
 
