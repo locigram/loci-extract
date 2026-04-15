@@ -4,38 +4,90 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loci-extract"
-version = "0.1.0"
-description = "Standalone document extraction and OCR service for ephemeral ingestion pipelines"
+version = "0.2.0"
+description = "Local-first tax document extraction CLI + API. Pulls structured JSON from W-2s, 1099s, 1098s, K-1s, SSA-1099, RRB-1099 using local LLMs and local OCR."
 readme = "README.md"
-requires-python = ">=3.11"
-authors = [{ name = "sudobot99" }]
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "loci-extract contributors" }]
+keywords = ["tax", "ocr", "extraction", "w2", "1099", "k-1", "pdf", "pydantic", "local-llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+
 dependencies = [
-  "fastapi>=0.115,<1.0",
-  "uvicorn[standard]>=0.30,<1.0",
-  "pydantic>=2.8,<3.0",
-  "python-multipart>=0.0.9,<1.0",
-  "pymupdf>=1.24,<2.0",
-  "python-docx>=1.1,<2.0",
-  "openpyxl>=3.1,<4.0",
-  "pandas>=2.2,<3.0",
-  "pillow>=10.4,<11.0",
-  "pytesseract>=0.3.10,<1.0",
-  "pdfplumber>=0.11,<1.0",
+    "openai>=1.0.0",
+    "pdfminer.six>=20221105",
+    "pdf2image>=1.17.0",
+    "pytesseract>=0.3.10",
+    "pydantic>=2.0",
+    "Pillow>=10.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
+# Heavier OCR engines; optional because they pull torch/paddle.
+ocr = [
+    "easyocr>=1.7",
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.6",
+    "torch>=2.0",
+]
+# HTTP API server (FastAPI + uvicorn).
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+# Web UI — inherits [api]; static assets served by FastAPI StaticFiles.
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+# Full local stack.
+full = [
+    "easyocr>=1.7",
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.6",
+    "torch>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
 dev = [
-  "pytest>=8.3,<9.0",
-  "httpx>=0.27,<1.0",
-  "ruff>=0.6,<1.0",
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "httpx>=0.27",
+    "ruff>=0.5",
 ]
 
-[tool.setuptools.packages.find]
-include = ["app*"]
+[project.scripts]
+loci-extract = "loci_extract.cli:main"
+loci-extract-api = "loci_extract.api.server:main"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[tool.setuptools]
+packages = { find = { include = ["loci_extract*"] } }
+
+[tool.setuptools.package-data]
+"loci_extract.webapp" = ["static/*"]
 
 [tool.ruff]
-line-length = 100
-target-version = "py312"
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's Form/File-in-defaults pattern is its documented API.
+"loci_extract/api/*.py" = ["B008"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
