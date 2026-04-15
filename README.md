@@ -104,6 +104,10 @@ curl -F "file=@25-W2.pdf" -F "format=json" http://localhost:8080/extract
 curl -F "file=@25-W2.pdf" -F "format=csv"  http://localhost:8080/extract -o w2.csv
 ```
 
+See [docs/integrations.md](docs/integrations.md) for client snippets in
+Python / Node / Go / PowerShell / curl / Make / n8n / Zapier, OpenAPI
+client-code generation, auth setup, and latency/error notes.
+
 ---
 
 ## Library

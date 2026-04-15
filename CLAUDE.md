@@ -135,6 +135,16 @@ See the auto-memory file `deploy_surugpu.md` for SSH access, GPU layout,
 and how to redeploy. Ollama and the older loci-extract Docker container
 are no longer used.
 
+## Docs
+
+- `README.md` — install, CLI, API quickstart.
+- `EXTRACT_SPEC.md` — the authoritative per-document-type JSON schema
+  reference. Read this before changing `loci_extract/schema.py` or
+  `loci_extract/prompts.py`.
+- `docs/integrations.md` — external-caller guide: multipart field tables,
+  auth, client snippets (Python/Node/Go/PowerShell/curl/Make/n8n/Zapier),
+  OpenAPI client generation, latency and error notes.
+
 ## Common pitfalls
 
 - **FastAPI `File(...)` defaults.** Ruff B008 flags these. Ignored for
