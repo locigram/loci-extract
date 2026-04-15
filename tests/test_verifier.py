@@ -123,10 +123,11 @@ def test_compute_derived_balance_sheet_retained_earnings():
             }],
         },
     }
-    derived = compute_derived_fields(extracted, "BALANCE_SHEET")
-    assert "retained_earnings_calculated" in derived
+    # compute_derived_fields mutates `extracted` in-place for nested fields.
+    compute_derived_fields(extracted, "BALANCE_SHEET")
     # 1,000,000 reported total - 900,000 explicit = 100,000 implied retained
-    assert abs(derived["retained_earnings_calculated"] - 100000.0) < 0.01
+    assert "retained_earnings_calculated" in extracted["equity"]
+    assert abs(extracted["equity"]["retained_earnings_calculated"] - 100000.0) < 0.01
 
 
 def test_compute_derived_income_statement_net_income():

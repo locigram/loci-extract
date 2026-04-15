@@ -153,15 +153,21 @@ def _find_total(extracted: dict, side_key: str, total_key: str):
 def compute_derived_fields(extracted: dict, document_type: str) -> dict:
     """Compute fields that must NOT come from the LLM (DESIGN_DECISIONS).
 
-    Returns a dict to merge into the document `data`. Per-doc-type:
-      - BALANCE_SHEET: retained_earnings_calculated
-      - INCOME_STATEMENT / INCOME_STATEMENT_COMPARISON: net_income_calculated
-      - RESERVE_ALLOCATION: total_reserve_balance_calculated, total_bank_balance_calculated
+    **Mutates ``extracted`` in-place** to set nested per-doc-type derived
+    fields (e.g., ``extracted["equity"]["retained_earnings_calculated"]``).
+    Also returns a flat dict of top-level derived fields suitable for
+    ``merged.update(...)``.
+
+    Per-doc-type:
+      - BALANCE_SHEET: equity.retained_earnings_calculated (nested)
+      - INCOME_STATEMENT / INCOME_STATEMENT_COMPARISON: net_income_calculated (top-level)
+      - RESERVE_ALLOCATION: total_reserve_balance_calculated,
+        total_bank_balance_calculated (top-level)
     """
     derived: dict = {}
 
     if document_type == "BALANCE_SHEET":
-        equity = extracted.get("equity", {}) or {}
+        equity = extracted.setdefault("equity", {})
         explicit_sections = equity.get("sections", []) or []
         explicit_sum = sum(
             (_account_value(a) for s in explicit_sections for a in s.get("accounts", []) or []),
@@ -170,7 +176,7 @@ def compute_derived_fields(extracted: dict, document_type: str) -> dict:
         total_equity = _to_decimal(
             equity.get("total_equity_reported") or equity.get("total_equity") or 0
         )
-        derived["retained_earnings_calculated"] = float(total_equity - explicit_sum)
+        equity["retained_earnings_calculated"] = float(total_equity - explicit_sum)
 
     if document_type in ("INCOME_STATEMENT", "INCOME_STATEMENT_COMPARISON"):
         income_total = _find_total(extracted, "income", "total")
