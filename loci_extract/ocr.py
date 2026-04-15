@@ -272,10 +272,170 @@ def extract_pages(
     return {page: out.get(page, "") for page in pages}
 
 
+# ---------------------------------------------------------------------------
+# Orientation correction (Tesseract OSD)
+# ---------------------------------------------------------------------------
+
+
+def correct_orientation(img):
+    """Detect and correct rotation via Tesseract OSD.
+
+    Returns ``(corrected_image, was_rotated: bool)``. On any failure or when
+    Tesseract reports angle=0 / low confidence, returns the original image
+    with ``was_rotated=False``. PIL rotate is counter-clockwise; Tesseract
+    OSD reports the clockwise rotation needed, so we negate the angle."""
+    try:
+        import pytesseract
+        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
+        angle = int(osd.get("rotate", 0))
+        confidence = float(osd.get("orientation_conf", 0))
+        if confidence > 1.5 and angle != 0:
+            corrected = img.rotate(-angle, expand=True)
+            return corrected, True
+    except Exception as exc:
+        logger.debug("Orientation detection failed: %s", exc)
+    return img, False
+
+
+def extract_pages_detailed(
+    pdf_path: str | Path,
+    pages: list[int],
+    *,
+    engine: EngineName = "auto",
+    gpu: GpuSetting = "auto",
+    dpi: int = 300,
+    fix_orientation: bool = True,
+) -> list[dict]:
+    """OCR the given pages and return per-page results with provenance.
+
+    Returns ``[{page: int, text: str, rotated: bool, confidence: float | None}, ...]``.
+    Like :func:`extract_pages` but with rotation fix + per-page confidence
+    tracking. Use this when downstream code needs to populate
+    ``FinancialMetadata.pages_rotated`` / ``ocr_confidence`` /
+    ``ocr_low_confidence_pages``.
+    """
+    if not pages:
+        return []
+    resolved_engine, use_gpu = select_engine(engine, gpu)
+    logger.info(
+        "OCR (detailed) engine selected: %s (gpu=%s, fix_orientation=%s)",
+        resolved_engine, use_gpu, fix_orientation,
+    )
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory(prefix="loci-extract-ocr-") as tmp:
+        tmp_dir = Path(tmp)
+        png_paths = _render_pdf_pages(Path(pdf_path), pages, dpi=dpi, output_dir=tmp_dir)
+        if not png_paths:
+            return [{"page": p, "text": "", "rotated": False, "confidence": None} for p in pages]
+
+        rotated_map: dict[int, bool] = {}
+        if fix_orientation:
+            # Re-save rotated PNGs so the engine ingests the corrected image.
+            for page, png in png_paths.items():
+                with Image.open(png) as img:
+                    corrected, was_rotated = correct_orientation(img)
+                    if was_rotated:
+                        corrected.save(png)
+                    rotated_map[page] = was_rotated
+
+        if resolved_engine == "tesseract":
+            text_map = _ocr_tesseract(png_paths)
+            confidences = {p: None for p in png_paths}  # tesseract path doesn't track conf
+        elif resolved_engine == "easyocr":
+            text_map, confidences = _ocr_easyocr_with_confidence(png_paths, use_gpu)
+        elif resolved_engine == "paddleocr":
+            text_map, confidences = _ocr_paddleocr_with_confidence(png_paths, use_gpu)
+        else:
+            raise RuntimeError(f"Unsupported OCR engine {resolved_engine!r}")
+
+    out: list[dict] = []
+    for p in pages:
+        out.append({
+            "page": p,
+            "text": text_map.get(p, ""),
+            "rotated": rotated_map.get(p, False),
+            "confidence": confidences.get(p),
+        })
+    return out
+
+
+def _ocr_easyocr_with_confidence(
+    png_paths: dict[int, Path], use_gpu: bool
+) -> tuple[dict[int, str], dict[int, float | None]]:
+    global _easyocr_reader
+    import easyocr
+
+    if _easyocr_reader is None:
+        logger.info("Loading EasyOCR reader (gpu=%s)", use_gpu)
+        _easyocr_reader = easyocr.Reader(["en"], gpu=use_gpu)
+    reader = _easyocr_reader
+
+    texts: dict[int, str] = {}
+    confs: dict[int, float | None] = {}
+    for page, png in png_paths.items():
+        try:
+            results = reader.readtext(str(png), detail=1)
+        except Exception as exc:
+            logger.warning("EasyOCR failed on page %d: %s", page, exc)
+            texts[page] = ""
+            confs[page] = None
+            continue
+        if results:
+            confidences = [r[2] for r in results if len(r) >= 3]
+            avg = sum(confidences) / len(confidences) if confidences else 0.0
+            texts[page] = "\n".join(r[1] for r in results)
+            confs[page] = avg
+        else:
+            texts[page] = ""
+            confs[page] = None
+    return texts, confs
+
+
+def _ocr_paddleocr_with_confidence(
+    png_paths: dict[int, Path], use_gpu: bool
+) -> tuple[dict[int, str], dict[int, float | None]]:
+    global _paddleocr_reader
+    from paddleocr import PaddleOCR
+
+    if _paddleocr_reader is None:
+        logger.info("Loading PaddleOCR reader (gpu=%s)", use_gpu)
+        _paddleocr_reader = PaddleOCR(
+            use_angle_cls=True, lang="en", use_gpu=use_gpu, show_log=False
+        )
+    reader = _paddleocr_reader
+
+    texts: dict[int, str] = {}
+    confs: dict[int, float | None] = {}
+    for page, png in png_paths.items():
+        try:
+            result = reader.ocr(str(png), cls=True)
+        except Exception as exc:
+            logger.warning("PaddleOCR failed on page %d: %s", page, exc)
+            texts[page] = ""
+            confs[page] = None
+            continue
+        if result and result[0]:
+            lines = result[0]
+            confidences = [line[1][1] for line in lines if line and len(line) >= 2]
+            texts[page] = "\n".join(
+                line[1][0] for line in lines if line and len(line) >= 2
+            )
+            confs[page] = (
+                sum(confidences) / len(confidences) if confidences else None
+            )
+        else:
+            texts[page] = ""
+            confs[page] = None
+    return texts, confs
+
+
 __all__ = [
     "EngineName",
     "GpuSetting",
     "available_engines",
     "select_engine",
     "extract_pages",
+    "extract_pages_detailed",
+    "correct_orientation",
 ]

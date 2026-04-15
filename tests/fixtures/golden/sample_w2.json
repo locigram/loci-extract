@@ -1,0 +1,75 @@
+{
+  "documents": [
+    {
+      "document_type": "W2",
+      "tax_year": 2025,
+      "data": {
+        "employer": {
+          "name": "Acme Coffee Roasters LLC",
+          "ein": "12-3456789",
+          "address": "1234 Bean Street, Portland OR 97201",
+          "state_id": "OR-100-200-300"
+        },
+        "employee": {
+          "name": "Jane M Smith",
+          "ssn_last4": "XXX-XX-4321",
+          "address": "456 Elm St, Portland OR 97201"
+        },
+        "federal": {
+          "box1_wages": 75000.0,
+          "box2_federal_withheld": 12000.0,
+          "box3_ss_wages": 75000.0,
+          "box4_ss_withheld": 4650.0,
+          "box5_medicare_wages": 75000.0,
+          "box6_medicare_withheld": 1087.5,
+          "box7_ss_tips": null,
+          "box8_allocated_tips": null,
+          "box10_dependent_care": 0.0,
+          "box11_nonqualified_plans": null
+        },
+        "box12": [
+          {
+            "code": "DD",
+            "amount": 3206.32,
+            "description": "Cost of employer-sponsored health coverage (informational, non-taxable)"
+          },
+          {
+            "code": "AA",
+            "amount": 3833.36,
+            "description": "Designated Roth 401(k) contributions"
+          }
+        ],
+        "box13": {
+          "statutory_employee": false,
+          "retirement_plan": true,
+          "third_party_sick_pay": false
+        },
+        "box14_other": [
+          {
+            "label": "CA SDI",
+            "amount": 92.16
+          }
+        ],
+        "state": [
+          {
+            "state_abbr": "OR",
+            "state_id": "OR-100-200-300",
+            "box16_state_wages": 75000.0,
+            "box17_state_withheld": 4500.0
+          }
+        ],
+        "local": []
+      },
+      "metadata": {
+        "is_corrected": false,
+        "is_void": false,
+        "is_summary_sheet": false,
+        "payer_tin_type": "EIN",
+        "notes": [
+          "Box 14 includes CA SDI, which is not applicable to OR state wages — likely a payroll system artifact or misplacement.",
+          "Box 12 includes non-standard code 'DD' (cost of employer-sponsored health coverage) and 'AA' (Designated Roth 401(k) contributions)."
+        ]
+      }
+    }
+  ]
+}

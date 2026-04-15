@@ -56,6 +56,11 @@ class ExtractionOptions:
     temperature: float = 0.0
     max_tokens: int = 4096
     retry: int = 2
+    # Phase 1 additions for financial documents:
+    chunk_size_tokens: int = 6000  # cap input tokens per LLM chunk
+    verify_totals: bool = True     # run Python-side totals verifier on financial docs
+    fix_orientation: bool = True   # auto-rotate scanned-sideways pages via Tesseract OSD
+    force_family: str | None = None  # override family detection: "tax" | "financial_simple" | ...
 
 
 # ---------------------------------------------------------------------------
@@ -208,21 +213,59 @@ def extract_document(
     if progress_callback:
         progress_callback(f"calling LLM {opts.model_name} at {opts.model_url}")
 
-    extraction = parse_extraction(
-        client,
-        user_text,
-        system_prompt=SYSTEM_PROMPT,
-        model_name=opts.model_name,
-        temperature=opts.temperature,
-        max_tokens=opts.max_tokens,
-        retry=opts.retry,
-        redact=opts.redact,
-    )
+    # ── Family routing: tax docs use the original parse_extraction path
+    # (preserves byte-exact tax behavior — the golden file regression depends
+    # on this). Financial docs go through the new chunked + verified pipeline.
+    family = _resolve_family(raw_text, opts.force_family)
+    if progress_callback:
+        progress_callback(f"detected family: {family}")
 
-    extraction = _dedup_documents(extraction)
+    if family == "tax":
+        extraction = parse_extraction(
+            client,
+            user_text,
+            system_prompt=SYSTEM_PROMPT,
+            model_name=opts.model_name,
+            temperature=opts.temperature,
+            max_tokens=opts.max_tokens,
+            retry=opts.retry,
+            redact=opts.redact,
+        )
+        extraction = _dedup_documents(extraction)
+    else:
+        # Financial branch — chunk → multi-LLM → merge → verify → derived
+        from loci_extract.core_chunked import extract_financial_document
+
+        extraction = extract_financial_document(
+            client=client,
+            raw_text=raw_text,
+            opts=opts,
+            family=family,
+            progress=progress_callback,
+        )
+
     if progress_callback:
         progress_callback(f"extracted {len(extraction.documents)} document(s)")
     return extraction
+
+
+def _resolve_family(raw_text: str, force: str | None) -> str:
+    """Pick document family. ``force`` overrides; otherwise the master detector
+    picks tax-first, financial-second, falling back to ``tax`` (preserves the
+    pre-refactor behavior on documents that are neither identifiable)."""
+    if force:
+        return force
+    from loci_extract.detector import detect_financial_document_type, detect_tax_document_type
+
+    tax = detect_tax_document_type(raw_text)
+    if tax.document_type != "UNKNOWN" and tax.confidence >= 0.5:
+        return "tax"
+    fin_type = detect_financial_document_type(raw_text)
+    if fin_type != "FINANCIAL_UNKNOWN":
+        from loci_extract.prompts import DOCUMENT_FAMILY_MAP, DocumentFamily
+        family = DOCUMENT_FAMILY_MAP.get(fin_type, DocumentFamily.FINANCIAL_SIMPLE)
+        return family.value if hasattr(family, "value") else family
+    return "tax"  # safe fallback: original tax-prompt behavior
 
 
 def extract_batch(

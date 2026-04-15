@@ -15,7 +15,40 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# ---------------------------------------------------------------------------
+# Amount normalization
+# ---------------------------------------------------------------------------
+
+
+def _parse_amount(v) -> float | None:
+    """Normalize financial amount formats to float or None.
+
+    Handles: 1234.56 / 1,234.56 / (1,234.56) / -1,234.56 / 1,234.56- / *** / ""
+    Trailing dash (QuickBooks convention) and parentheses both indicate negative.
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if s in ("", "***", "-", "—", "N/A", "n/a"):
+        return None
+    negative = (s.startswith("(") and s.endswith(")")) or s.endswith("-")
+    s = (
+        s.removeprefix("(")
+        .removesuffix(")")
+        .removesuffix("-")
+        .replace(",", "")
+        .replace("$", "")
+        .strip()
+    )
+    try:
+        result = float(s)
+        return -result if negative else result
+    except ValueError:
+        return None
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -38,11 +71,68 @@ class PartyInfo(BaseModel):
 
 
 class DocumentMetadata(BaseModel):
+    """Canonical metadata per DESIGN_DECISIONS.md. Used by every document type
+    (tax and financial). The LLM populates ``notes[]`` only; every other field
+    is owned by a specific Python pipeline stage. ``extra="allow"`` protects
+    future pipeline additions from triggering a schema bump.
+
+    Field ownership:
+        detector.py:          encoding_broken, extraction_strategy, software_detected,
+                              document_type_confidence, issuer_software, estimated_record_count
+        ocr.py:               pages_rotated, ocr_confidence, ocr_low_confidence_pages
+        boundary_detector.py: source_pages, boundary_confidence
+        llm.py:               prompt_tokens, completion_tokens, finish_reason,
+                              llm_calls, llm_retries
+        verifier.py:          totals_verified, totals_mismatches, balance_sheet_balanced
+        LLM:                  notes (only)
+    Flag fields (is_corrected, is_void, is_summary_sheet): set by detector
+    (preferred) or LLM.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    # Standard document flags
     is_corrected: bool = False
     is_void: bool = False
     is_summary_sheet: bool = False
     payer_tin_type: Literal["EIN", "SSN"] | None = None
+
+    # detector.py
+    encoding_broken: bool = False
+    extraction_strategy: str | None = None  # "text" | "pdfplumber" | "ocr" | "vision"
+    software_detected: str | None = None
+    document_type_confidence: float | None = None
+    issuer_software: str | None = None
+    estimated_record_count: int = 1
+
+    # ocr.py
+    pages_rotated: list[int] = Field(default_factory=list)
+    ocr_confidence: float | None = None
+    ocr_low_confidence_pages: list[int] = Field(default_factory=list)
+
+    # boundary_detector.py
+    source_pages: tuple[int, int] | None = None
+    boundary_confidence: float | None = None
+
+    # llm.py
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    finish_reason: str | None = None
+    llm_calls: int = 1
+    llm_retries: int = 0
+
+    # verifier.py
+    totals_verified: bool = False
+    totals_mismatches: list[dict] = Field(default_factory=list)
+    balance_sheet_balanced: bool | None = None
+
+    # LLM-populated (the only field the model should write)
     notes: list[str] = Field(default_factory=list)
+
+
+# Canonical alias used by the financial specs. DocumentMetadata and
+# FinancialMetadata are the same class; use whichever name reads better in context.
+FinancialMetadata = DocumentMetadata
 
 
 class StateWithholding(BaseModel):
@@ -576,6 +666,347 @@ class K1EstateTrust1041(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Financial primitives (shared by BalanceSheet / IncomeStatement / GL / Aging / Reserve)
+# ---------------------------------------------------------------------------
+
+
+class SoftwareMetadata(BaseModel):
+    """Software-specific header block. Lives on FinancialEntity. Stores
+    AppFolio / Yardi / QB / etc. header fields verbatim. `raw` captures any
+    unrecognized header lines so nothing is silently dropped."""
+
+    model_config = ConfigDict(extra="allow")
+
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    # AppFolio
+    properties: str | None = None
+    accounting_basis: str | None = None
+    gl_account_map: str | None = None
+    level_of_detail: str | None = None
+    include_zero_balance_accounts: bool | None = None
+    report_created_on: str | None = None
+    fund_type: str | None = None
+
+    # Yardi
+    book: str | None = None
+    entity_code: str | None = None
+
+    # QB
+    report_basis: str | None = None  # "Accrual" | "Cash"
+    report_date_range: str | None = None
+
+
+class FinancialEntity(BaseModel):
+    name: str
+    type: str | None = None  # "HOA" | "LLC" | "Corp" | "Individual" | ...
+    accounting_basis: str | None = None
+    period_start: str | None = None  # ISO date
+    period_end: str | None = None
+    prepared_by: str | None = None
+    software: str = "Unknown"
+    software_metadata: SoftwareMetadata | None = None
+
+
+class AccountLine(BaseModel):
+    """One line item on a financial statement. Balance-sheet rows use `balance`,
+    income-statement rows use `amount`. `value()` returns whichever is set."""
+
+    account_number: str | None = None
+    account_name: str
+    balance: float | None = None
+    amount: float | None = None
+    section: str | None = None  # optional tag for flat lists that track source section
+
+    @field_validator("balance", "amount", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+    def value(self) -> float:
+        return self.balance if self.balance is not None else (self.amount or 0.0)
+
+
+class Section(BaseModel):
+    """A section group with its accounts and (optionally) its labeled total.
+    Nested sections via `subsections` (forward-ref). `section_total` is inline
+    per DESIGN_DECISIONS #1; there is no separate `subtotals[]` list anywhere."""
+
+    section_name: str
+    accounts: list[AccountLine] = Field(default_factory=list)
+    subsections: list[Section] = Field(default_factory=list)
+    section_total: float | None = None
+
+    @field_validator("section_total", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class ColumnDefinition(BaseModel):
+    key: str
+    label: str
+    period_start: str | None = None
+    period_end: str | None = None
+    column_type: str = "actual"  # "actual" | "budget" | "variance_dollar" | "variance_pct"
+
+
+class MultiColumnAccountLine(BaseModel):
+    account_number: str | None = None
+    account_name: str
+    section: str
+    subsection: str | None = None
+    row_type: str = "account"  # "account" | "subtotal" | "total"
+    values: dict[str, float | None] = Field(default_factory=dict)
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def _normalize_values(cls, v):
+        if not isinstance(v, dict):
+            return {}
+        return {k: _parse_amount(val) for k, val in v.items()}
+
+
+class GLTransaction(BaseModel):
+    date: str | None = None
+    type: str | None = None
+    number: str | None = None
+    name: str | None = None
+    memo: str | None = None
+    split: str | None = None
+    debit: float | None = None
+    credit: float | None = None
+    balance: float | None = None
+    row_type: str = "transaction"  # "transaction" | "balance_header" | "balance_footer"
+
+    @field_validator("debit", "credit", "balance", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class GLAccount(BaseModel):
+    account_number: str | None = None
+    account_name: str
+    account_type: str | None = None
+    beginning_balance: float | None = None
+    ending_balance: float | None = None
+    transactions: list[GLTransaction] = Field(default_factory=list)
+
+    @field_validator("beginning_balance", "ending_balance", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class AgingRow(BaseModel):
+    name: str
+    current: float | None = None
+    days_1_30: float | None = None
+    days_31_60: float | None = None
+    days_61_90: float | None = None
+    over_90: float | None = None
+    total: float | None = None
+
+    @field_validator(
+        "current", "days_1_30", "days_31_60", "days_61_90", "over_90", "total", mode="before"
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class ReserveComponent(BaseModel):
+    account_number: str | None = None
+    component_name: str
+    current_balance: float | None = None
+    annual_contribution: float | None = None
+    fully_funded_balance: float | None = None
+    percent_funded: float | None = None
+
+    @field_validator(
+        "current_balance", "annual_contribution", "fully_funded_balance", "percent_funded",
+        mode="before",
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+# ---------------------------------------------------------------------------
+# Financial documents
+# ---------------------------------------------------------------------------
+
+
+class _FinancialSide(BaseModel):
+    """Shared shape for assets/liabilities/equity/income/expenses sides.
+    Each carries its own section list plus an optional top-level reported total.
+    All totals are extracted verbatim from the document; derived totals are
+    computed in verifier.py and live under FinancialMetadata.totals_* or
+    document-type-specific *_calculated fields."""
+
+    sections: list[Section] = Field(default_factory=list)
+    # Generic reported total. Per-type fields below override the label
+    # (total_assets, total_liabilities, total_equity_reported, etc).
+    total: float | None = None
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class BalanceSheetAssets(BaseModel):
+    sections: list[Section] = Field(default_factory=list)
+    total_assets: float | None = None
+
+    @field_validator("total_assets", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class BalanceSheetLiabilities(BaseModel):
+    sections: list[Section] = Field(default_factory=list)
+    total_liabilities: float | None = None
+
+    @field_validator("total_liabilities", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class BalanceSheetEquity(BaseModel):
+    sections: list[Section] = Field(default_factory=list)
+    total_equity_reported: float | None = None  # LLM extracts verbatim
+    # Computed by verifier.py (not LLM):
+    retained_earnings_calculated: float | None = None
+    prior_years_retained_earnings_calculated: float | None = None
+
+    @field_validator(
+        "total_equity_reported",
+        "retained_earnings_calculated",
+        "prior_years_retained_earnings_calculated",
+        mode="before",
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class BalanceSheet(BaseModel):
+    entity: FinancialEntity
+    assets: BalanceSheetAssets = Field(default_factory=BalanceSheetAssets)
+    liabilities: BalanceSheetLiabilities = Field(default_factory=BalanceSheetLiabilities)
+    equity: BalanceSheetEquity = Field(default_factory=BalanceSheetEquity)
+    total_liabilities_and_equity_reported: float | None = None
+    # Computed by verifier.py:
+    check_difference: float | None = None
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+    @field_validator(
+        "total_liabilities_and_equity_reported", "check_difference", mode="before"
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class IncomeStatementSide(BaseModel):
+    sections: list[Section] = Field(default_factory=list)
+    total: float | None = None
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class IncomeStatement(BaseModel):
+    entity: FinancialEntity
+    income: IncomeStatementSide = Field(default_factory=IncomeStatementSide)
+    expenses: IncomeStatementSide = Field(default_factory=IncomeStatementSide)
+    other_income: IncomeStatementSide | None = None
+    other_expenses: IncomeStatementSide | None = None
+    operating_income_reported: float | None = None
+    net_income_reported: float | None = None
+    # Computed by verifier.py:
+    net_income_calculated: float | None = None
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+    @field_validator(
+        "operating_income_reported", "net_income_reported", "net_income_calculated",
+        mode="before",
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class MultiColumnStatement(BaseModel):
+    """Covers INCOME_STATEMENT_COMPARISON, BUDGET_VS_ACTUAL, QB_PROFIT_LOSS,
+    and any multi-period comparison report."""
+
+    entity: FinancialEntity
+    columns: list[ColumnDefinition] = Field(default_factory=list)
+    line_items: list[MultiColumnAccountLine] = Field(default_factory=list)
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+
+class TrialBalance(BaseModel):
+    entity: FinancialEntity
+    accounts: list[dict[str, Any]] = Field(default_factory=list)
+    total_debits: float | None = None
+    total_credits: float | None = None
+    difference: float | None = None
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+    @field_validator("total_debits", "total_credits", "difference", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+class GeneralLedger(BaseModel):
+    entity: FinancialEntity
+    accounts: list[GLAccount] = Field(default_factory=list)
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+
+class AgingReport(BaseModel):
+    entity: FinancialEntity
+    report_type: Literal["AR", "AP"] = "AR"
+    as_of: str | None = None
+    aging_buckets: list[str] = Field(
+        default_factory=lambda: ["current", "1_to_30", "31_to_60", "61_to_90", "over_90"]
+    )
+    rows: list[AgingRow] = Field(default_factory=list)
+    totals: AgingRow | None = None
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+
+class ReserveAllocation(BaseModel):
+    entity: FinancialEntity
+    components: list[ReserveComponent] = Field(default_factory=list)
+    bank_accounts: list[AccountLine] = Field(default_factory=list)
+    # Computed by verifier.py:
+    total_reserve_balance_calculated: float | None = None
+    total_bank_balance_calculated: float | None = None
+    due_to_from_calculated: float | None = None
+    metadata: FinancialMetadata = Field(default_factory=FinancialMetadata)
+
+    @field_validator(
+        "total_reserve_balance_calculated",
+        "total_bank_balance_calculated",
+        "due_to_from_calculated",
+        mode="before",
+    )
+    @classmethod
+    def _normalize(cls, v):
+        return _parse_amount(v)
+
+
+# ---------------------------------------------------------------------------
 # Top-level wrapper
 # ---------------------------------------------------------------------------
 
@@ -602,6 +1033,16 @@ DocumentTypeName = Literal[
     "K-1 1065",
     "K-1 1120-S",
     "K-1 1041",
+    # Financial document types (Phase 2+):
+    "BALANCE_SHEET",
+    "INCOME_STATEMENT",
+    "INCOME_STATEMENT_COMPARISON",
+    "BUDGET_VS_ACTUAL",
+    "TRIAL_BALANCE",
+    "ACCOUNTS_RECEIVABLE_AGING",
+    "ACCOUNTS_PAYABLE_AGING",
+    "GENERAL_LEDGER",
+    "RESERVE_ALLOCATION",
 ]
 
 
@@ -628,7 +1069,21 @@ DATA_MODEL_BY_TYPE: dict[str, type[BaseModel]] = {
     "K-1 1065": K1Partnership1065,
     "K-1 1120-S": K1SCorp1120S,
     "K-1 1041": K1EstateTrust1041,
+    # Financial
+    "BALANCE_SHEET": BalanceSheet,
+    "INCOME_STATEMENT": IncomeStatement,
+    "INCOME_STATEMENT_COMPARISON": MultiColumnStatement,
+    "BUDGET_VS_ACTUAL": MultiColumnStatement,
+    "TRIAL_BALANCE": TrialBalance,
+    "ACCOUNTS_RECEIVABLE_AGING": AgingReport,
+    "ACCOUNTS_PAYABLE_AGING": AgingReport,
+    "GENERAL_LEDGER": GeneralLedger,
+    "RESERVE_ALLOCATION": ReserveAllocation,
 }
+
+
+# Resolve forward references on Section (subsections: list[Section])
+Section.model_rebuild()
 
 
 class Document(BaseModel):
@@ -661,8 +1116,34 @@ __all__ = [
     # shared
     "PartyInfo",
     "DocumentMetadata",
+    "FinancialMetadata",
     "StateWithholding",
     "LocalWithholding",
+    # financial primitives
+    "SoftwareMetadata",
+    "FinancialEntity",
+    "AccountLine",
+    "Section",
+    "ColumnDefinition",
+    "MultiColumnAccountLine",
+    "GLTransaction",
+    "GLAccount",
+    "AgingRow",
+    "ReserveComponent",
+    # financial docs
+    "BalanceSheet",
+    "BalanceSheetAssets",
+    "BalanceSheetLiabilities",
+    "BalanceSheetEquity",
+    "IncomeStatement",
+    "IncomeStatementSide",
+    "MultiColumnStatement",
+    "TrialBalance",
+    "GeneralLedger",
+    "AgingReport",
+    "ReserveAllocation",
+    # helpers
+    "_parse_amount",
     # per-type
     "W2",
     "W2Federal",

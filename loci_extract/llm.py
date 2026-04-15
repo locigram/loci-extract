@@ -233,10 +233,162 @@ def _brief(exc: Exception) -> str:
     return msg
 
 
+# ---------------------------------------------------------------------------
+# Token budgets + finish_reason="length" auto-bump retry
+# ---------------------------------------------------------------------------
+
+
+# Per-doc-type response token budget. Picked to comfortably fit the typical
+# JSON for that doc type + headroom. Multi-column / GL / K-1 are intentionally
+# generous; the ``call_llm_raw`` retry below auto-bumps another 1.5x on
+# finish_reason=="length" if the model still truncates.
+TOKEN_BUDGETS: dict[str, int] = {
+    # Tax forms
+    "W2": 2048,
+    "1099-NEC": 1024,
+    "1099-MISC": 1024,
+    "1099-INT": 1024,
+    "1099-DIV": 1024,
+    "1099-B": 4096,   # transaction list
+    "1099-R": 1024,
+    "1099-G": 1024,
+    "1099-SA": 1024,
+    "1099-K": 1024,
+    "1099-S": 1024,
+    "1099-C": 1024,
+    "1099-A": 1024,
+    "1098": 1024,
+    "1098-T": 1024,
+    "1098-E": 1024,
+    "SSA-1099": 1024,
+    "RRB-1099": 1024,
+    "K-1 1065": 3000,
+    "K-1 1120-S": 3000,
+    "K-1 1041": 3000,
+    # Financial — single period
+    "BALANCE_SHEET": 4096,
+    "INCOME_STATEMENT": 4096,
+    "CASH_FLOW_STATEMENT": 3000,
+    "TRIAL_BALANCE": 6000,
+    # Financial — multi-column
+    "INCOME_STATEMENT_COMPARISON": 12000,
+    "BUDGET_VS_ACTUAL": 8000,
+    "QB_PROFIT_LOSS": 8000,
+    # Financial — transaction-level (use chunking)
+    "GENERAL_LEDGER": 8000,
+    "ACCOUNTS_RECEIVABLE_AGING": 4096,
+    "ACCOUNTS_PAYABLE_AGING": 4096,
+    "QB_GENERAL_LEDGER": 8000,
+    # Reserve
+    "RESERVE_ALLOCATION": 6000,
+    # Unknown
+    "FINANCIAL_UNKNOWN": 8000,
+}
+
+DEFAULT_TOKEN_BUDGET = 4096
+
+
+def get_token_budget(document_type: str, override: int | None = None) -> int:
+    """Return the response-token budget for a document type.
+
+    Override wins. Otherwise looks up TOKEN_BUDGETS, falls back to default.
+    Warns to log when the budget is large enough that the model context window
+    needs explicit consideration."""
+    if override:
+        return override
+    budget = TOKEN_BUDGETS.get(document_type, DEFAULT_TOKEN_BUDGET)
+    if budget > 6000:
+        logger.warning(
+            "Document type %s has token budget %d. Ensure model context window "
+            "is >= %d (response + prompt headroom).",
+            document_type, budget, budget + 8000,
+        )
+    return budget
+
+
+def call_llm_raw(
+    client,
+    *,
+    model_name: str,
+    system_prompt: str,
+    user_text: str,
+    document_type: str,
+    max_tokens_override: int | None = None,
+    temperature: float = 0.0,
+    retries: int = 2,
+) -> dict:
+    """Call the LLM and return ``{raw, prompt_tokens, completion_tokens,
+    finish_reason, llm_calls, llm_retries}``.
+
+    On ``finish_reason == "length"``, bumps ``max_tokens`` by 1.5x and retries
+    up to ``retries`` times. Strips markdown fences from ``raw``. Raises
+    ``ValueError`` if still truncated after retries.
+    """
+    max_tokens = get_token_budget(document_type, max_tokens_override)
+    llm_calls = 0
+    llm_retries = 0
+    last_finish: str | None = None
+    last_raw = ""
+    last_prompt_tokens: int | None = None
+    last_completion_tokens: int | None = None
+
+    while True:
+        llm_calls += 1
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        choice = response.choices[0]
+        last_raw = strip_code_fence(getattr(choice.message, "content", "") or "")
+        last_finish = getattr(choice, "finish_reason", None)
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            last_prompt_tokens = getattr(usage, "prompt_tokens", None)
+            last_completion_tokens = getattr(usage, "completion_tokens", None)
+
+        if last_finish == "length" and llm_retries < retries:
+            llm_retries += 1
+            new_max = int(max_tokens * 1.5)
+            logger.warning(
+                "LLM response truncated (finish_reason=length) at max_tokens=%d. "
+                "Retrying with max_tokens=%d.",
+                max_tokens, new_max,
+            )
+            max_tokens = new_max
+            continue
+
+        if last_finish == "length":
+            raise ValueError(
+                f"Response still truncated after {retries} retries (finish_reason=length). "
+                f"Use chunking for this document or raise --max-tokens."
+            )
+
+        break
+
+    return {
+        "raw": last_raw,
+        "prompt_tokens": last_prompt_tokens,
+        "completion_tokens": last_completion_tokens,
+        "finish_reason": last_finish,
+        "llm_calls": llm_calls,
+        "llm_retries": llm_retries,
+    }
+
+
 __all__ = [
     "make_client",
     "parse_extraction",
     "strip_code_fence",
     "extract_json_object",
     "redact_ssn_in_output",
+    "get_token_budget",
+    "call_llm_raw",
+    "TOKEN_BUDGETS",
+    "DEFAULT_TOKEN_BUDGET",
 ]

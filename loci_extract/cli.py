@@ -88,6 +88,33 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--temperature", type=float, default=0.0, help="LLM temperature (default: 0.0)")
     p.add_argument("--max-tokens", type=int, default=4096, help="LLM max tokens (default: 4096)")
     p.add_argument("--retry", type=int, default=2, help="Retry count on invalid JSON (default: 2)")
+    p.add_argument(
+        "--no-fix-orientation",
+        dest="fix_orientation",
+        action="store_false",
+        help="Disable auto-rotation of scanned-sideways pages (default: enabled)",
+    )
+    p.set_defaults(fix_orientation=True)
+    p.add_argument(
+        "--chunk-size",
+        type=int,
+        default=6000,
+        dest="chunk_size_tokens",
+        help="Max input tokens per LLM chunk for long documents (default: 6000)",
+    )
+    p.add_argument(
+        "--no-verify-totals",
+        dest="verify_totals",
+        action="store_false",
+        help="Skip Python-side totals verification on financial documents",
+    )
+    p.set_defaults(verify_totals=True)
+    p.add_argument(
+        "--family",
+        choices=["tax", "financial_simple", "financial_multi", "financial_txn", "financial_reserve"],
+        default=None,
+        help="Force document family (default: auto-detect)",
+    )
     p.add_argument("--verbose", action="store_true", help="Pipeline steps to stderr")
     p.add_argument("--version", action="version", version=f"loci-extract {__version__}")
     return p
@@ -106,6 +133,10 @@ def _options_from_args(args: argparse.Namespace) -> ExtractionOptions:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         retry=args.retry,
+        chunk_size_tokens=args.chunk_size_tokens,
+        verify_totals=args.verify_totals,
+        fix_orientation=args.fix_orientation,
+        force_family=args.family,
     )
 
 

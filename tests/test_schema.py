@@ -120,6 +120,16 @@ def test_every_registered_type_has_default_construction():
             "estate_or_trust": {"name": "E"},
             "beneficiary": {"name": "Y", "tin_last4": "XXX-XX-1234"},
         },
+        # Financial types — entity is the only required field.
+        "BALANCE_SHEET": {"entity": {"name": "Acme"}},
+        "INCOME_STATEMENT": {"entity": {"name": "Acme"}},
+        "INCOME_STATEMENT_COMPARISON": {"entity": {"name": "Acme"}, "columns": []},
+        "BUDGET_VS_ACTUAL": {"entity": {"name": "Acme"}, "columns": []},
+        "TRIAL_BALANCE": {"entity": {"name": "Acme"}},
+        "ACCOUNTS_RECEIVABLE_AGING": {"entity": {"name": "Acme"}},
+        "ACCOUNTS_PAYABLE_AGING": {"entity": {"name": "Acme"}, "report_type": "AP"},
+        "GENERAL_LEDGER": {"entity": {"name": "Acme"}},
+        "RESERVE_ALLOCATION": {"entity": {"name": "Acme"}},
     }
     missing = [t for t in DATA_MODEL_BY_TYPE if t not in minimal_payloads]
     assert missing == [], f"Add minimal payloads for: {missing}"
