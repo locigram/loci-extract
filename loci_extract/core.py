@@ -168,6 +168,7 @@ def _gather_page_text(
                 engine=opts.ocr_engine,
                 gpu=opts.gpu,
                 dpi=opts.dpi,
+                fix_orientation=opts.fix_orientation,
             )
             page_text.update(ocr_text)
 

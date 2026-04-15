@@ -242,24 +242,38 @@ def extract_pages(
     engine: EngineName = "auto",
     gpu: GpuSetting = "auto",
     dpi: int = 300,
+    fix_orientation: bool = True,
 ) -> dict[int, str]:
     """OCR the given 1-indexed ``pages``. Returns ``{page: text}``.
 
     Resolves the engine via :func:`select_engine`, renders the requested pages
     to PNG at the requested DPI (under a temp dir that's wiped after), and
-    dispatches to the chosen engine. Empty-text pages still appear in the
-    returned map.
+    dispatches to the chosen engine. When ``fix_orientation=True`` each PNG
+    is run through Tesseract OSD and rotated in-place before OCR, so
+    scanned-sideways or 180°-flipped pages transcribe correctly. Empty-text
+    pages still appear in the returned map.
     """
     if not pages:
         return {}
     resolved_engine, use_gpu = select_engine(engine, gpu)
-    logger.info("OCR engine selected: %s (gpu=%s)", resolved_engine, use_gpu)
+    logger.info(
+        "OCR engine selected: %s (gpu=%s, fix_orientation=%s)",
+        resolved_engine, use_gpu, fix_orientation,
+    )
 
     with tempfile.TemporaryDirectory(prefix="loci-extract-ocr-") as tmp:
         tmp_dir = Path(tmp)
         png_paths = _render_pdf_pages(Path(pdf_path), pages, dpi=dpi, output_dir=tmp_dir)
         if not png_paths:
             return dict.fromkeys(pages, "")
+        if fix_orientation:
+            from PIL import Image
+            for page, png in png_paths.items():
+                with Image.open(png) as img:
+                    corrected, was_rotated = correct_orientation(img)
+                if was_rotated:
+                    corrected.save(png)
+                    logger.info("rotated page %d via Tesseract OSD", page)
         if resolved_engine == "tesseract":
             out = _ocr_tesseract(png_paths)
         elif resolved_engine == "easyocr":

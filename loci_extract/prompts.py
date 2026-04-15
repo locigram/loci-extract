@@ -456,7 +456,8 @@ _SCHEMA_HINT_BY_TYPE: dict[str, str] = {
 
     "INCOME_STATEMENT": """{
   "entity": {"name": "string", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD",
-             "accounting_basis": "Cash|Accrual", "software": "..."},
+             "accounting_basis": "Cash|Accrual", "software": "...",
+             "software_metadata": {"raw": {}, "properties": null, "accounting_basis": null}},
   "income":   {"sections": [{"section_name": "...", "accounts": [
                   {"account_number": null, "account_name": "...", "amount": 0.0}],
                  "section_total": 0.0}],
@@ -470,7 +471,12 @@ _SCHEMA_HINT_BY_TYPE: dict[str, str] = {
 
     "INCOME_STATEMENT_COMPARISON": """{
   "entity": {"name": "string", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD",
-             "software": "QuickBooks Desktop|AppFolio|..."},
+             "software": "QuickBooks Desktop|AppFolio|...",
+             "accounting_basis": "Cash|Accrual|null",
+             "software_metadata": {"raw": {}, "properties": null, "accounting_basis": null,
+                                   "gl_account_map": null, "level_of_detail": null,
+                                   "include_zero_balance_accounts": null,
+                                   "report_created_on": null, "fund_type": null}},
   "columns": [
     {"key": "jan_dec_25_actual", "label": "Jan - Dec 25",  "period_start": "2025-01-01",
      "period_end": "2025-12-31", "column_type": "actual"},
