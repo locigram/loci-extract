@@ -5,7 +5,7 @@ import re
 from app.normalization import find_first_date, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import first_source_pages, get_text_lines, snippet_around_match
+from app.structured.common import first_source_pages, get_form_lines, get_form_text, snippet_around_match
 
 _PAYMENT_KEYWORDS = ("visa", "mastercard", "amex", "american express", "cash", "debit")
 
@@ -24,9 +24,20 @@ def _merchant_name(lines: list[str]) -> str | None:
     return lines[0] if lines else None
 
 
+_RECEIPT_FORM_SIGNALS = [
+    "total",
+    "subtotal",
+    "tax",
+    "receipt",
+    "invoice",
+    "amount due",
+    "balance due",
+]
+
+
 def build_receipt_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) -> StructuredDocument:
-    text = raw_payload.raw_text
-    lines = get_text_lines(raw_payload)
+    text = get_form_text(raw_payload, form_signals=_RECEIPT_FORM_SIGNALS)
+    lines = get_form_lines(raw_payload, form_signals=_RECEIPT_FORM_SIGNALS)
     subtotal = _find_amount("subtotal", text)
     tax = _find_amount("tax", text)
     tip = _find_amount("tip", text)

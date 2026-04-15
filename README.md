@@ -287,47 +287,119 @@ The current service has three practical layers:
    - extraction warnings and provenance
 
 2. **Classification / document typing layer**
-   - currently mostly rule-based from extracted text
-   - should evolve toward image/layout-aware document identification
+   - rule-based text matching (`app/classification/rules.py`)
+   - GPU layout-based pre-classification via PP-Structure (`app/classification/layout.py`)
+   - Donut IRS tax document classifier — 28 IRS form types from page images (`app/classification/donut_classifier.py`)
+   - profile-aware routing: `app/classification/routing.py` dispatches to the right classifier chain
 
 3. **Structured interpretation layer**
    - W-2
    - 1099-NEC
    - receipt
    - tax return package
-   - financial statement
+   - financial statement (with optional LLM section labeling)
 
-The intended evolution is to keep layer 1 stable and full-fidelity, while making layers 2 and 3 smarter and more document-aware.
+Layer 1 is stable and full-fidelity. Layers 2 and 3 evolve via profiles and pluggable classifiers.
+
+## Extraction profiles
+
+Profiles bundle OCR backend, classifier strategy, and enrichment settings per document family. Callers select a profile via the `extraction_profile` Form field — explicit field overrides still work on top.
+
+Built-in profiles:
+
+| Profile | Classifier | OCR | LLM | PII masking | Use case |
+|---------|-----------|-----|-----|-------------|----------|
+| `general` | rules | auto | off | off | General documents, contracts, letters |
+| `tax` | auto (donut → layout → rules) | auto | off | off | IRS tax forms (W-2, 1040, 1099, schedules) |
+| `financial` | layout | auto | on | on | Balance sheets, financial statements |
+| `receipt` | rules | always | off | off | Scanned receipts and invoices |
+
+Example usage:
+
+```bash
+# Tax documents — Donut IRS classifier on GPU, no PII masking
+curl -X POST http://127.0.0.1:8000/extract/structured \
+  -F "file=@./w2.pdf" \
+  -F "extraction_profile=tax"
+
+# Financial statements — layout classifier + LLM section labeling
+curl -X POST http://127.0.0.1:8000/extract/structured \
+  -F "file=@./balance-sheet.pdf" \
+  -F "extraction_profile=financial"
+
+# Override a profile setting
+curl -X POST http://127.0.0.1:8000/extract/structured \
+  -F "file=@./scan.pdf" \
+  -F "extraction_profile=receipt" \
+  -F "ocr_strategy=never"
+
+# No profile — backward compatible, same as before
+curl -X POST http://127.0.0.1:8000/extract -F "file=@./doc.pdf"
+```
+
+Profiles are YAML files in `app/profiles/`. To add a new profile for a new document family, drop a YAML file there — no code changes needed:
+
+```yaml
+name: insurance
+description: Insurance claim documents
+ocr_strategy: always
+ocr_backend: auto
+classifier:
+  strategy: rules
+enable_llm_enrichment: false
+mask_pii: true
+```
+
+`GET /capabilities` reports available profiles and classifier model availability.
+
+## OCR backends
+
+The service supports pluggable OCR backends via `app/ocr_backends/`:
+
+- **Tesseract** — CPU, always available when the `tesseract` binary is installed. Multi-pass preprocessing with best-pass selection.
+- **PaddleOCR** — GPU, available when `paddlepaddle-gpu` + `paddleocr` are installed and CUDA is present. Single-pass mode (PaddleOCR handles its own preprocessing).
+
+Select a backend per request with the `ocr_backend` Form field (`auto | tesseract | paddleocr`), or set it in an extraction profile. `auto` prefers PaddleOCR when available, otherwise Tesseract.
+
+## GPU support
+
+Two Docker images are published:
+
+- **CPU image** (`:main` tag, `Dockerfile`) — Tesseract, OCRmyPDF, rule-based classification
+- **GPU image** (`:gpu` tag, `Dockerfile.gpu`) — everything above plus PaddleOCR, PP-Structure layout classifier, Donut IRS tax classifier, and the LLM enrichment client
+
+```bash
+# Run GPU image
+docker compose -f compose.gpu.yaml up -d
+
+# Check what's available
+curl http://127.0.0.1:8000/capabilities | jq '.gpu, .ocr_backends, .profiles'
+```
+
+GPU env vars: `LOCI_EXTRACT_DEFAULT_OCR_BACKEND`, `LOCI_EXTRACT_ALLOW_PADDLEOCR_CPU`, `LOCI_EXTRACT_FORCE_CUDA`.
 
 ## Recommended next milestones
 
-If continuing this project later in Claude Code, the highest-value next milestones are:
-
-1. **Document identification before final extraction**
-   - classify likely form type from page image/layout/title cues
-   - return confidence and selected OCR profile
-
-2. **OCR profile routing by document family**
-   - generic document
-   - tax form
-   - financial statement
-   - receipt
-
-3. **CSV-friendly financial extraction**
+1. **CSV-friendly financial extraction**
    - stronger row reconstruction
    - totals / subtotals
    - cleaner section assignment
    - optional CSV export endpoint or artifact
 
-4. **Higher-confidence tax form extraction**
-   - stronger W-2 / 1099 validation
+2. **Higher-confidence tax form extraction**
+   - stronger W-2 / 1099 field validation
+   - fine-tune Donut or Qwen2.5-VL on the fake-w2-us-tax-form-dataset
    - better evidence capture
    - more document families over time
 
-5. **Review / confidence enhancements**
+3. **Review / confidence enhancements**
    - field-level confidence
    - row-level ambiguity flags
    - more explicit reasons for human review
+
+4. **Vision-language model integration**
+   - Qwen2.5-VL-7B via the LLM client for universal document extraction
+   - structured JSON output from any document image as a fallback
 
 ## CI
 
@@ -820,6 +892,11 @@ This is deliberate: accuracy matters more than pretending low-quality OCR is tru
 ### `file`
 Multipart uploaded document.
 
+### `extraction_profile`
+Optional named extraction profile. Bundles OCR, classification, and enrichment defaults for a document family. Available on both `/extract` and `/extract/structured`. Explicit field values override profile defaults.
+
+Allowed values: any profile name from `GET /capabilities` → `profiles.available` (e.g. `general`, `tax`, `financial`, `receipt`).
+
 ### `include_chunks`
 - `true` (default): include derived chunks
 - `false`: return only canonical extraction outputs
@@ -827,17 +904,24 @@ Multipart uploaded document.
 ### `ocr_strategy`
 Allowed values:
 
-- `auto` — use OCR when appropriate
+- `auto` — use OCR when appropriate (default when no profile)
 - `always` — force OCR intent where supported
 - `never` — disable OCR intent
 
-How to think about it for PDFs:
+### `ocr_backend`
+Allowed values:
 
-- `auto`: use parser text first; if no PDF text layer is found, try OCR if available
-- `always`: attempt OCR even when parser text exists; useful for scanned or low-quality PDFs when you want OCR-first behavior and provenance reporting
-- `never`: do not attempt OCR; return parser output only, plus warnings if the PDF has no usable text layer
+- `auto` — prefer PaddleOCR (GPU) when available, otherwise Tesseract (default when no profile)
+- `tesseract` — use Tesseract explicitly
+- `paddleocr` — use PaddleOCR explicitly (requires GPU image)
 
-This setting is recorded in the response payload. For PDFs and images, behavior depends on whether OCR backends are available on the host. Check `/capabilities` to see what is currently installed.
+### `ocr_strategy` / `ocr_backend` interaction with PDFs
+
+- `auto` + `auto`: use parser text first; if no PDF text layer is found, try the best available OCR backend
+- `always` + `paddleocr`: force OCR on every page using PaddleOCR
+- `never` + any: do not attempt OCR; return parser output only
+
+These settings are recorded in the response payload. Check `/capabilities` to see what is currently installed.
 
 ## What the returned JSON means
 

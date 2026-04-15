@@ -1,0 +1,8 @@
+name: receipt
+description: Receipts and invoices from images
+ocr_strategy: always
+ocr_backend: auto
+classifier:
+  strategy: rules
+enable_llm_enrichment: false
+mask_pii: false

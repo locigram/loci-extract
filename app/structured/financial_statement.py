@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections import OrderedDict
+from typing import Any
 
 from app.normalization import find_first_date, normalize_whitespace, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
 from app.structured.common import first_source_pages, get_text_lines, snippet_around_match
+
+logger = logging.getLogger("loci.structured.financial")
 
 _ACCOUNT_RE = re.compile(r"^\d{4}-\d{4}$")
 _BALANCE_RE = re.compile(r"^[($\-\d,\.\s)]+$")
@@ -34,9 +39,13 @@ _IGNORE_HEADINGS = {
 
 
 def _page_lines(raw_payload: ExtractionPayload) -> list[list[str]]:
+    from app.structured.common import _is_instruction_page
+
     pages: list[list[str]] = []
     for segment in raw_payload.segments:
         if segment.type != "page":
+            continue
+        if _is_instruction_page(segment.text):
             continue
         lines = [line.strip() for line in segment.text.splitlines() if line.strip()]
         if lines:
@@ -235,7 +244,115 @@ def _summarize_sections(line_items: list[dict[str, object]]) -> list[dict[str, o
 
 
 
-def build_financial_statement_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) -> StructuredDocument:
+_VALID_LLM_SECTIONS = {"Assets", "Liabilities", "Equity", "Revenue", "Expenses", "Cost of Goods Sold", "Capital", "Reserve Accounts"}
+
+_LLM_SECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "account_name": {"type": "string"},
+                    "section": {"type": "string"},
+                },
+                "required": ["account_name", "section"],
+            },
+        },
+    },
+    "required": ["assignments"],
+}
+
+
+def _maybe_enrich_sections_with_llm(
+    line_items: list[dict[str, object]],
+    sections: list[dict[str, object]],
+    *,
+    enable_llm_enrichment: bool = False,
+) -> dict[str, Any]:
+    """Optionally use an LLM to assign sections to unclassified line items.
+
+    Returns a dict for extra["llm_enrichment"] with status metadata.
+    Never raises — failures degrade to the rule-based result.
+    """
+    if not enable_llm_enrichment:
+        return {"attempted": False, "applied": False, "reason": "disabled"}
+
+    from app.llm.config import get_llm_client
+
+    client = get_llm_client()
+    if client is None:
+        return {"attempted": True, "applied": False, "reason": "llm_client_not_configured"}
+
+    # Find line items with no section
+    unclassified = [
+        item for item in line_items
+        if not item.get("section")
+    ]
+    if not unclassified:
+        return {"attempted": True, "applied": False, "reason": "no_unclassified_items"}
+
+    account_names = [str(item.get("account_name", "")) for item in unclassified]
+
+    system_prompt = (
+        "You are a financial document analyst. Given a list of account names from a financial statement, "
+        "assign each account to one of these sections: Assets, Liabilities, Equity, Revenue, Expenses, "
+        "Cost of Goods Sold, Capital, Reserve Accounts. Return JSON with an 'assignments' array."
+    )
+    user_prompt = f"Classify these accounts:\n{json.dumps(account_names)}"
+
+    try:
+        result = client.complete_json(
+            system_prompt,
+            user_prompt,
+            schema=_LLM_SECTION_SCHEMA,
+        )
+    except Exception as exc:
+        logger.warning("LLM enrichment call failed: %s", exc)
+        return {"attempted": True, "applied": False, "reason": f"llm_error:{exc}"}
+
+    if result is None:
+        return {"attempted": True, "applied": False, "reason": "llm_returned_none"}
+
+    # Apply assignments
+    assignments = result.get("assignments", [])
+    name_to_section: dict[str, str] = {}
+    for assignment in assignments:
+        name = str(assignment.get("account_name", "")).strip()
+        section = str(assignment.get("section", "")).strip()
+        if name and section in _VALID_LLM_SECTIONS:
+            name_to_section[name] = section
+
+    items_relabeled = 0
+    for item in line_items:
+        if item.get("section"):
+            continue
+        account_name = str(item.get("account_name", ""))
+        if account_name in name_to_section:
+            item["section"] = name_to_section[account_name]
+            items_relabeled += 1
+
+    # Rebuild sections summary if we made changes
+    if items_relabeled > 0:
+        sections.clear()
+        sections.extend(_summarize_sections(line_items))
+
+    return {
+        "attempted": True,
+        "applied": items_relabeled > 0,
+        "model": client.model,
+        "items_relabeled": items_relabeled,
+        "strategy": "financial_statement.section_labeling",
+    }
+
+
+def build_financial_statement_document(
+    raw_payload: ExtractionPayload,
+    *,
+    mask_pii: bool = True,
+    enable_llm_enrichment: bool = False,
+) -> StructuredDocument:
     del mask_pii
     text = raw_payload.raw_text
     lines = get_text_lines(raw_payload)
@@ -246,6 +363,11 @@ def build_financial_statement_document(raw_payload: ExtractionPayload, *, mask_p
     accounting_basis = _accounting_basis(text)
     line_items = _extract_line_items(pages)
     sections = _summarize_sections(line_items)
+
+    # Optional LLM enrichment for unclassified line items
+    llm_enrichment = _maybe_enrich_sections_with_llm(
+        line_items, sections, enable_llm_enrichment=enable_llm_enrichment
+    )
 
     validation_errors: list[str] = []
     if report_type == "balance_sheet" and not line_items:
@@ -258,6 +380,7 @@ def build_financial_statement_document(raw_payload: ExtractionPayload, *, mask_p
         "accounting_basis": accounting_basis,
         "line_items": line_items,
         "sections": sections,
+        "llm_enrichment": llm_enrichment,
         "evidence": {
             "source_pages": first_source_pages(raw_payload, limit=3),
             "report_type": snippet_around_match(text, [r"\bbalance sheet\b", r"\bincome statement\b", r"\bprofit and loss\b"]),

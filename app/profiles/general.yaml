@@ -1,0 +1,8 @@
+name: general
+description: General-purpose extraction, rules-only classification
+ocr_strategy: auto
+ocr_backend: auto
+classifier:
+  strategy: rules
+enable_llm_enrichment: false
+mask_pii: false

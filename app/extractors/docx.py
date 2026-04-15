@@ -75,6 +75,7 @@ class DocxExtractor(BaseExtractor):
         mime_type: str,
         *,
         ocr_strategy: str = "auto",
+        ocr_backend: str = "auto",
     ) -> ExtractionPayload:
         doc = Document(str(file_path))
         document_id = str(uuid4())

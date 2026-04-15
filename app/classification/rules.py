@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from PIL import Image
+
 from app.schemas import ClassificationResult, StructuredDocType
 
 SUPPORTED_DOC_TYPES: tuple[StructuredDocType, ...] = (
@@ -22,6 +24,7 @@ def classify_document(
     mime_type: str,
     raw_text: str,
     doc_type_hint: str | None = None,
+    page_image: Image.Image | None = None,
 ) -> ClassificationResult:
     hint = (doc_type_hint or "").strip().lower()
     if hint in SUPPORTED_DOC_TYPES and hint != "unknown":
@@ -31,6 +34,19 @@ def classify_document(
             strategy="hint",
             matched_signals=[f"doc_type_hint:{hint}"],
         )
+
+    # Try layout-based classification when a page image is available
+    if page_image is not None:
+        from app.classification.layout import classify_layout
+
+        layout_result = classify_layout(page_image, filename=filename)
+        if layout_result is not None and layout_result.confidence >= 0.75:
+            return ClassificationResult(
+                doc_type=layout_result.doc_type,
+                confidence=layout_result.confidence,
+                strategy="layout",
+                matched_signals=layout_result.matched_signals,
+            )
 
     text = _normalized(raw_text)
     lower_name = (filename or "").lower()

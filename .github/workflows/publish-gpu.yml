@@ -1,0 +1,68 @@
+name: Publish GPU Docker image
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: sudobot99/loci-extract
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile.gpu'
+      - 'app/ocr_backends/**'
+      - 'app/llm/**'
+      - 'app/classification/layout.py'
+      - 'pyproject.toml'
+      - 'scripts/warm-gpu-models.sh'
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-gpu:
+    runs-on: [self-hosted, Linux, X64, suru-devops, loci-extract, docker]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=gpu,enable={{is_default_branch}}
+            type=raw,value=gpu-${{ github.sha }}
+            type=ref,event=tag,suffix=-gpu
+            type=raw,value=gpu-latest,enable=${{ github.event_name == 'release' }}
+
+      - name: Build and push GPU image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.gpu
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu

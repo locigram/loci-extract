@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from statistics import median
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytesseract
 from PIL import Image, ImageFilter, ImageOps
+
+if TYPE_CHECKING:
+    from app.ocr_backends import OcrBackend
 
 
 def score_ocr_text(text: str) -> float:
@@ -118,42 +121,15 @@ def _cluster_positions(values: list[float], tolerance: float) -> list[float]:
 
 
 
-def _extract_table_candidates(image: Image.Image) -> list[dict[str, Any]]:
-    try:
-        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    except Exception:
-        return []
+def _build_table_candidates_from_words(
+    words: list[dict[str, Any]],
+    *,
+    detection_method: str = "ocr_word_grid",
+) -> list[dict[str, Any]]:
+    """Build table candidates from a list of word dicts with text/left/top/width/height/center_y keys.
 
-    texts = data.get("text") or []
-    if not texts:
-        return []
-
-    words: list[dict[str, Any]] = []
-    for idx, raw_text in enumerate(texts):
-        text = str(raw_text or "").strip()
-        if not text:
-            continue
-        left = int(data.get("left", [0])[idx] or 0)
-        top = int(data.get("top", [0])[idx] or 0)
-        width = int(data.get("width", [0])[idx] or 0)
-        height = int(data.get("height", [0])[idx] or 0)
-        conf_raw = data.get("conf", ["-1"])[idx]
-        try:
-            conf = float(conf_raw)
-        except (TypeError, ValueError):
-            conf = -1.0
-        words.append(
-            {
-                "text": text,
-                "left": left,
-                "top": top,
-                "width": width,
-                "height": height,
-                "center_y": top + (height / 2 if height else 0),
-                "conf": conf,
-            }
-        )
-
+    Shared by Tesseract (via image_to_data) and PaddleOCR (via WordBox) paths.
+    """
     if len(words) < 4:
         return []
 
@@ -206,19 +182,119 @@ def _extract_table_candidates(image: Image.Image) -> list[dict[str, Any]]:
             "text": "\n".join(rendered_rows).strip(),
             "row_count": populated_rows,
             "column_count": len(anchors),
-            "detection_method": "ocr_word_grid",
+            "detection_method": detection_method,
         }
     ]
 
 
+def _extract_table_candidates(image: Image.Image, *, backend_words: list | None = None) -> list[dict[str, Any]]:
+    """Extract table candidates from an image.
 
-def extract_best_ocr_result(image: Image.Image) -> dict[str, Any]:
+    If backend_words (list of WordBox from PaddleOCR) is provided, use those directly.
+    Otherwise fall back to Tesseract image_to_data.
+    """
+    if backend_words is not None:
+        words = [
+            {
+                "text": w.text,
+                "left": w.left,
+                "top": w.top,
+                "width": w.width,
+                "height": w.height,
+                "center_y": w.top + (w.height / 2 if w.height else 0),
+                "conf": w.conf,
+            }
+            for w in backend_words
+        ]
+        return _build_table_candidates_from_words(words, detection_method="paddleocr_word_grid")
+
+    # Tesseract path
+    try:
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    except Exception:
+        return []
+
+    texts = data.get("text") or []
+    if not texts:
+        return []
+
+    words: list[dict[str, Any]] = []
+    for idx, raw_text in enumerate(texts):
+        text = str(raw_text or "").strip()
+        if not text:
+            continue
+        left = int(data.get("left", [0])[idx] or 0)
+        top = int(data.get("top", [0])[idx] or 0)
+        width = int(data.get("width", [0])[idx] or 0)
+        height = int(data.get("height", [0])[idx] or 0)
+        conf_raw = data.get("conf", ["-1"])[idx]
+        try:
+            conf = float(conf_raw)
+        except (TypeError, ValueError):
+            conf = -1.0
+        words.append(
+            {
+                "text": text,
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+                "center_y": top + (height / 2 if height else 0),
+                "conf": conf,
+            }
+        )
+
+    return _build_table_candidates_from_words(words)
+
+
+
+def extract_best_ocr_result(image: Image.Image, *, backend: OcrBackend | None = None) -> dict[str, Any]:
+    # Resolve backend; default to TesseractBackend for backward compat
+    if backend is None:
+        from app.ocr_backends.tesseract_backend import TesseractBackend
+        backend = TesseractBackend()
+
+    backend_name = backend.name
+
+    # PaddleOCR does its own preprocessing/deskew, so skip multi-variant pipeline
+    if backend_name == "paddleocr":
+        result = backend.run(image)
+        text = result.text.strip()
+        score = score_ocr_text(text)
+        table_candidates = _extract_table_candidates(image, backend_words=result.words)
+        return {
+            "text": text,
+            "score": score,
+            "selected_pass": "paddleocr_native",
+            "selected_rotation": 0,
+            "processed_mode": image.mode,
+            "preprocessing": [],
+            "backend": backend_name,
+            "table_candidates": table_candidates,
+            "ocr_passes": [
+                {
+                    "name": "paddleocr_native",
+                    "score": score,
+                    "text_length": len(text),
+                    "processed_mode": image.mode,
+                    "rotation_degrees": 0,
+                    "steps": [],
+                }
+            ],
+        }
+
+    # Tesseract (or any future multi-variant backend): use the 6-variant pipeline
     variants = build_ocr_variants(image)
     pass_results: list[dict[str, Any]] = []
     best_result: dict[str, Any] | None = None
 
     for variant in variants:
-        text = pytesseract.image_to_string(variant["image"]).strip()
+        result = backend.run(
+            variant["image"],
+            variant_name=variant["name"],
+            rotation=variant["rotation_degrees"],
+        )
+        text = result.text.strip()
         score = score_ocr_text(text)
         pass_result = {
             "name": variant["name"],
@@ -253,6 +329,7 @@ def extract_best_ocr_result(image: Image.Image) -> dict[str, Any]:
         "selected_rotation": best_result["rotation_degrees"],
         "processed_mode": best_result["processed_mode"],
         "preprocessing": best_result["steps"],
+        "backend": backend_name,
         "table_candidates": table_candidates,
         "ocr_passes": [
             {

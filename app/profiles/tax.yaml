@@ -1,0 +1,10 @@
+name: tax
+description: IRS tax document extraction with Donut classifier
+ocr_strategy: auto
+ocr_backend: auto
+classifier:
+  strategy: auto
+  model_name: hsarfraz/donut-irs-tax-docs-classifier
+  confidence_threshold: 0.80
+enable_llm_enrichment: false
+mask_pii: false

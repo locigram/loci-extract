@@ -1,0 +1,13 @@
+name: vlm
+description: Vision language model — hybrid (parser + verify + VLM fallback)
+ocr_strategy: vlm_hybrid
+ocr_backend: auto
+classifier:
+  strategy: vlm
+  confidence_threshold: 0.70
+enable_llm_enrichment: false
+mask_pii: false
+vlm:
+  base_url: http://localhost:11434
+  model: qwen3-vl:32b
+  timeout: 120

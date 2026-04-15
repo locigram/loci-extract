@@ -61,7 +61,7 @@ class ExtractionPayload(BaseModel):
 class ClassificationResult(BaseModel):
     doc_type: StructuredDocType
     confidence: float = 0.0
-    strategy: Literal["rules", "hint"] = "rules"
+    strategy: Literal["rules", "hint", "layout", "donut", "vlm"] = "rules"
     matched_signals: list[str] = Field(default_factory=list)
 
 

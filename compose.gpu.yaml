@@ -1,6 +1,29 @@
 services:
   loci-extract:
-    gpus: ${LOCI_EXTRACT_GPU_REQUEST:-all}
+    image: ${LOCI_EXTRACT_GPU_IMAGE:-ghcr.io/sudobot99/loci-extract:gpu}
+    container_name: loci-extract-gpu
+    restart: unless-stopped
+    ports:
+      - "${LOCI_EXTRACT_PORT:-8000}:8000"
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      LOCI_EXTRACT_DEFAULT_OCR_BACKEND: ${LOCI_EXTRACT_DEFAULT_OCR_BACKEND:-auto}
+      LOCI_EXTRACT_MAX_UPLOAD_BYTES: ${LOCI_EXTRACT_MAX_UPLOAD_BYTES:-26214400}
+      LOCI_EXTRACT_MAX_PDF_PAGES: ${LOCI_EXTRACT_MAX_PDF_PAGES:-200}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TIMEOUT_KEEP_ALIVE: ${TIMEOUT_KEEP_ALIVE:-30}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${LOCI_EXTRACT_GPU_COUNT:-all}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

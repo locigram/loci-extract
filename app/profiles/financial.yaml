@@ -1,0 +1,9 @@
+name: financial
+description: Financial statements with LLM section labeling
+ocr_strategy: auto
+ocr_backend: auto
+classifier:
+  strategy: layout
+  confidence_threshold: 0.70
+enable_llm_enrichment: true
+mask_pii: true

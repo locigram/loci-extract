@@ -5,7 +5,7 @@ import re
 from app.normalization import parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import first_source_pages, snippet_around_match
+from app.structured.common import first_source_pages, get_form_text, snippet_around_match
 
 
 def _find_amount(label: str, text: str) -> float | None:
@@ -13,8 +13,22 @@ def _find_amount(label: str, text: str) -> float | None:
     return parse_amount(match.group(1)) if match else None
 
 
+_1040_FORM_SIGNALS = [
+    "form 1040",
+    "u.s. individual income tax return",
+    "filing status",
+    "adjusted gross income",
+    "taxable income",
+    "total tax",
+    "total payments",
+    "amount you owe",
+    "overpaid",
+]
+
+
 def build_tax_return_package_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) -> StructuredDocument:
-    text = raw_payload.raw_text
+    # Use form data pages only (1040 can span 2 pages)
+    text = get_form_text(raw_payload, form_signals=_1040_FORM_SIGNALS)
     year_match = re.search(r"form\s+1040.*?(20\d{2})", text, flags=re.IGNORECASE | re.DOTALL)
     tax_year = int(year_match.group(1)) if year_match else None
     taxpayer_name_patterns = [

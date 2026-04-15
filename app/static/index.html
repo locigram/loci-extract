@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>loci-extract</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #232733; --border: #2e3345;
+    --text: #e1e4ed; --text-dim: #8b90a0; --accent: #6c8cff; --accent-hover: #8aa4ff;
+    --success: #4ade80; --warning: #fbbf24; --error: #f87171; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 1000px; margin: 0 auto; padding: 28px 24px; }
+
+  /* Header */
+  header { text-align: center; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+  header h1 span { color: var(--accent); }
+  header p { color: var(--text-dim); font-size: 14px; max-width: 640px; margin: 0 auto; }
+  .status-bar { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+  .status-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; background: var(--surface2); border: 1px solid var(--border); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dot.green { background: var(--success); } .dot.yellow { background: var(--warning); } .dot.red { background: var(--error); }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; margin-bottom: 18px; }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .card .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }
+
+  /* Drop zone */
+  .drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 40px 24px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; position: relative; }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(108,140,255,0.05); }
+  .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-zone .icon { font-size: 36px; margin-bottom: 10px; opacity: 0.6; }
+  .drop-zone .label { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .drop-zone .hint { font-size: 11px; color: var(--text-dim); }
+
+  /* Form */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; font-weight: 600; }
+  .field .fh { font-size: 10px; color: var(--text-dim); line-height: 1.3; }
+  .field select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text); font-size: 13px; outline: none; }
+  .field select:focus { border-color: var(--accent); }
+  .field-full { grid-column: 1 / -1; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; }
+  button.primary { flex: 1; padding: 10px 20px; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s, opacity 0.2s; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { padding: 10px 20px; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+  button.secondary:hover { background: var(--border); }
+  button.sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-weight: 500; }
+  button.sm:hover { background: var(--border); }
+
+  /* Queue */
+  .queue-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .queue-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
+  .queue-stats .stat { display: flex; align-items: center; gap: 4px; }
+  .queue-stats .stat strong { color: var(--text); }
+  .queue-actions { display: flex; gap: 8px; }
+  .queue-list { display: flex; flex-direction: column; gap: 6px; max-height: 400px; overflow-y: auto; }
+  .queue-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface2); border-radius: 8px; border: 1px solid var(--border); transition: border-color 0.3s; }
+  .queue-item.processing { border-color: var(--accent); }
+  .queue-item.done { border-color: var(--success); opacity: 0.85; }
+  .queue-item.error { border-color: var(--error); }
+  .queue-item .qi-status { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 14px; flex-shrink: 0; }
+  .qi-pending .qi-status { background: var(--surface); color: var(--text-dim); }
+  .qi-processing .qi-status { background: rgba(108,140,255,0.15); color: var(--accent); }
+  .qi-done .qi-status { background: rgba(74,222,128,0.15); color: var(--success); }
+  .qi-error .qi-status { background: rgba(248,113,113,0.15); color: var(--error); }
+  .queue-item .qi-info { flex: 1; min-width: 0; }
+  .queue-item .qi-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-item .qi-detail { font-size: 11px; color: var(--text-dim); }
+  .queue-item .qi-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .queue-item .qi-remove:hover { color: var(--error); }
+
+  /* Spinner */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+
+  /* Progress summary */
+  .progress-summary { margin-top: 12px; padding: 10px 14px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
+  .progress-summary .ps-bar { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+  .progress-summary .ps-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
+  .progress-summary .ps-text { font-size: 12px; color: var(--text-dim); text-align: center; }
+
+  /* Result detail modal */
+  .result-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center; padding: 24px; }
+  .result-overlay.visible { display: flex; }
+  .result-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 900px; width: 100%; max-height: 85vh; overflow-y: auto; padding: 24px; position: relative; }
+  .result-modal .close { position: absolute; top: 12px; right: 16px; background: none; border: none; color: var(--text-dim); font-size: 22px; cursor: pointer; }
+  .result-modal .close:hover { color: var(--text); }
+  .result-modal h3 { font-size: 16px; margin-bottom: 4px; }
+  .result-modal .rm-sub { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
+
+  /* Badges */
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--surface2); border: 1px solid var(--border); }
+  .badge.success { border-color: var(--success); color: var(--success); }
+  .badge.warning { border-color: var(--warning); color: var(--warning); }
+  .badge.error { border-color: var(--error); color: var(--error); }
+  .badge.info { border-color: var(--accent); color: var(--accent); }
+
+  /* Tabs */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 14px; gap: 0; }
+  .tab { padding: 7px 14px; font-size: 12px; font-weight: 500; color: var(--text-dim); cursor: pointer; border: none; border-bottom: 2px solid transparent; background: none; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .json-viewer { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; line-height: 1.6; overflow-x: auto; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .json-key { color: #7dd3fc; } .json-string { color: #86efac; } .json-number { color: #fbbf24; } .json-bool { color: #c084fc; } .json-null { color: var(--text-dim); }
+  .raw-text { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-size: 12px; line-height: 1.7; max-height: 350px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .summary-item { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .summary-item .slabel { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .summary-item .svalue { font-size: 15px; font-weight: 600; }
+  .warnings-list { list-style: none; } .warnings-list li { padding: 7px 10px; background: rgba(251,191,36,0.08); border-left: 3px solid var(--warning); border-radius: 4px; margin-bottom: 5px; font-size: 12px; } .warnings-list li .code { font-weight: 600; color: var(--warning); font-size: 11px; }
+
+  /* Help */
+  .help-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .help-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+  .help-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .help-card h4 { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--accent); }
+  .help-card p { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+  .help-card code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+  footer { text-align: center; padding: 20px; color: var(--text-dim); font-size: 11px; border-top: 1px solid var(--border); margin-top: 28px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1><span>loci</span>-extract</h1>
+    <p>Upload documents to extract text, tables, and structured data. Queue multiple files for batch processing. Files are processed in memory and deleted immediately.</p>
+    <div class="status-bar" id="status-bar"></div>
+  </header>
+
+  <!-- Step 1: Upload -->
+  <div class="card">
+    <h2>1. Add documents to queue</h2>
+    <p class="subtitle">Drag and drop one or more files, or click to browse. Supported: PDF, DOCX, XLSX, PNG, JPG, TIFF, WEBP, TXT, MD, CSV, JSON. Max 25 MB each.</p>
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx,.png,.jpg,.jpeg,.tiff,.tif,.webp,.txt,.md,.csv,.json">
+      <div class="icon">&#128196;</div>
+      <div class="label">Drop files here or click to browse</div>
+      <div class="hint">Select multiple files to queue them for batch processing. Nothing is stored on the server.</div>
+    </div>
+  </div>
+
+  <!-- Step 2: Pipeline choice -->
+  <div class="card">
+    <h2>2. Choose extraction pipeline</h2>
+    <p class="subtitle">Pick how documents should be processed. The VLM pipeline sends page images directly to an AI vision model — no OCR needed. The OCR pipeline uses traditional text extraction with optional GPU acceleration.</p>
+
+    <!-- Pipeline toggle -->
+    <div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+      <button class="primary" id="pipe-id-btn" style="flex:1;min-width:200px;padding:14px;font-size:14px;border-radius:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="setPipeline('identify')">
+        &#128196; Identify Only<br><span style="font-size:11px;font-weight:400;opacity:0.8">Fast document ID. Returns type, year, entity, suggested filename. No text extraction.</span>
+      </button>
+      <button class="primary" id="pipe-vlm-btn" style="flex:1;min-width:200px;padding:14px;font-size:14px;border-radius:10px;opacity:0.5" onclick="setPipeline('vlm')">
+        &#129302; VLM Pipeline<br><span style="font-size:11px;font-weight:400;opacity:0.8">AI vision model reads the image directly. Best accuracy on scans, messy PDFs, handwriting. Slower but smarter.</span>
+      </button>
+      <button class="primary" id="pipe-ocr-btn" style="flex:1;min-width:200px;padding:14px;font-size:14px;border-radius:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="setPipeline('ocr')">
+        &#128269; OCR Pipeline<br><span style="font-size:11px;font-weight:400;opacity:0.8">Traditional text extraction + OCR fallback. Fast on clean PDFs. Uses Tesseract or PaddleOCR.</span>
+      </button>
+      <button class="primary" id="pipe-compare-btn" style="flex:1;min-width:200px;padding:14px;font-size:14px;border-radius:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="setPipeline('compare')">
+        &#128200; Compare Pipelines<br><span style="font-size:11px;font-weight:400;opacity:0.8">Run a single file through all extraction modes and view results side-by-side. Use this to debug recognition quality.</span>
+      </button>
+    </div>
+
+    <!-- Identify settings (shown when Identify pipeline selected) -->
+    <div id="id-settings" style="display:none">
+      <div style="padding:10px 14px;background:rgba(74,222,128,0.08);border:1px solid rgba(74,222,128,0.2);border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--text-dim);line-height:1.5">
+        <strong style="color:var(--success)">How Identify works:</strong> Renders page 1 as an image and asks the VLM to identify the document type. Returns the document type, tax year, entity name, and a suggested filename for sorting/renaming. <strong>No text extraction is performed</strong> — this is designed to be fast for batch document sorting. Falls back to rule-based classification if VLM is unavailable.
+      </div>
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">No additional settings needed. Documents will be identified and results will show type, year, entity, and suggested filename.</p>
+    </div>
+
+    <!-- Compare settings (shown when Compare pipeline selected) -->
+    <div id="compare-settings" style="display:none">
+      <div style="padding:10px 14px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.25);border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--text-dim);line-height:1.5">
+        <strong style="color:var(--warning)">Debug mode:</strong> Drop <strong>one file</strong> and this runs it through every selected pipeline. The result modal gives you a tab per pipeline with the raw text, a VLM stage trace, and a Diff Text toggle so you can tell exactly which stage is degrading output. Pipelines that need a backend your host doesn't have (e.g. PaddleOCR without a GPU) will be marked unavailable instead of failing the whole run.
+      </div>
+      <div style="margin-bottom:10px">
+        <label style="font-size:12px;font-weight:600">Pipelines to run</label>
+        <div id="compare-pipeline-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px;margin-top:6px"></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-dim)">Pipelines run sequentially on the server (VLM is the slow path — the 32B model can take 30–90s per page). Only the first file in the queue is processed when Compare is selected.</p>
+    </div>
+
+    <!-- VLM settings (shown when VLM pipeline selected) -->
+    <div id="vlm-settings" style="display:none">
+      <div style="padding:10px 14px;background:rgba(108,140,255,0.08);border:1px solid rgba(108,140,255,0.2);border-radius:8px;margin-bottom:14px;font-size:12px;color:var(--text-dim);line-height:1.5">
+        <strong style="color:var(--accent)">How VLM Hybrid works:</strong> For each PDF page: <strong>(1)</strong> reads the text layer, <strong>(2)</strong> uses a fast LLM to verify the text is real (not garbage), <strong>(3)</strong> if text is bad or missing, renders the page as an image and sends it to the VLM. Clean pages are instant; only bad pages get the full VLM treatment. This gives you speed on good PDFs and accuracy on garbage ones.
+      </div>
+      <div class="form-grid">
+        <div class="field field-full">
+          <label for="vlm-model">VLM Model</label>
+          <select id="vlm-model">
+            <option value="vlm">Qwen3-VL 32B Hybrid &#8212; best accuracy, parser + verify + VLM fallback</option>
+            <option value="vlm-fast">Qwen3-VL 8B Hybrid &#8212; faster, parser + verify + VLM fallback</option>
+          </select>
+          <div class="fh">Hybrid mode: reads text layer first, verifies quality with fast LLM, only renders page images for VLM when text is bad. Fast on clean PDFs, accurate on garbage ones.</div>
+        </div>
+        <div class="field">
+          <label for="vlm-endpoint">Extraction Mode</label>
+          <select id="vlm-endpoint">
+            <option value="extract/structured" selected>Structured &#8212; classification + typed fields (recommended)</option>
+            <option value="extract">Raw &#8212; text and segments only</option>
+          </select>
+          <div class="fh">Structured mode classifies the document and extracts typed fields (W-2 boxes, receipt totals, etc). Raw mode returns text only.</div>
+        </div>
+        <div class="field">
+          <label for="vlm-doc-hint">Document Type Hint</label>
+          <select id="vlm-doc-hint">
+            <option value="">Auto-detect (let the model decide)</option>
+            <option value="w2">W-2</option>
+            <option value="1099-nec">1099-NEC</option>
+            <option value="receipt">Receipt</option>
+            <option value="tax_return_package">Tax Return (1040)</option>
+            <option value="financial_statement">Financial Statement</option>
+          </select>
+          <div class="fh">Optional. If you know the document type, this helps the model focus on the right fields.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OCR settings (shown when OCR pipeline selected) -->
+    <div id="ocr-settings">
+      <div class="form-grid">
+        <div class="field field-full">
+          <label for="profile">Document Profile</label>
+          <select id="profile">
+            <option value="">None (manual settings below)</option>
+            <option value="general">General &#8212; contracts, letters, generic docs</option>
+            <option value="tax">Tax &#8212; W-2, 1099, 1040, IRS forms (Donut classifier)</option>
+            <option value="financial">Financial &#8212; balance sheets, statements (layout + LLM enrichment)</option>
+            <option value="receipt">Receipt &#8212; scanned receipts/invoices (forced OCR)</option>
+          </select>
+          <div class="fh">Profiles bundle OCR, classification, and enrichment settings for a document family.</div>
+        </div>
+        <div class="field">
+          <label for="endpoint">Extraction Mode</label>
+          <select id="endpoint">
+            <option value="extract">Raw &#8212; text, segments, chunks</option>
+            <option value="extract/structured">Structured &#8212; raw + classification + typed fields</option>
+          </select>
+          <div class="fh"><b>Raw</b> = canonical text + segments. <b>Structured</b> = also classifies doc type and extracts typed fields.</div>
+        </div>
+        <div class="field">
+          <label for="ocr-strategy">OCR Strategy</label>
+          <select id="ocr-strategy">
+            <option value="">Default (auto)</option>
+            <option value="auto">Auto &#8212; OCR when needed</option>
+            <option value="always">Always &#8212; force OCR every page</option>
+            <option value="force_image">Force Image &#8212; ignore text layer, OCR page images</option>
+            <option value="never">Never &#8212; parser only, no OCR</option>
+          </select>
+          <div class="fh"><b>Auto</b> = text layer first, OCR if empty. <b>Force Image</b> = ignore junk text layers, OCR the rendered image.</div>
+        </div>
+        <div class="field">
+          <label for="ocr-backend">OCR Backend</label>
+          <select id="ocr-backend">
+            <option value="">Default (auto)</option>
+            <option value="auto">Auto &#8212; best available</option>
+            <option value="tesseract">Tesseract (CPU)</option>
+            <option value="paddleocr">PaddleOCR (GPU)</option>
+          </select>
+          <div class="fh"><b>Auto</b> prefers PaddleOCR on GPU. <b>Tesseract</b> works on CPU.</div>
+        </div>
+        <div class="field">
+          <label for="include-chunks">Include Chunks</label>
+          <select id="include-chunks">
+            <option value="true">Yes &#8212; RAG-ready chunks</option>
+            <option value="false">No &#8212; text + segments only</option>
+          </select>
+          <div class="fh">Chunks are sized text blocks for retrieval pipelines.</div>
+        </div>
+        <div class="field">
+          <label for="doc-type-hint">Document Type Hint</label>
+          <select id="doc-type-hint">
+            <option value="">Auto-detect</option>
+            <option value="w2">W-2</option>
+            <option value="1099-nec">1099-NEC</option>
+            <option value="receipt">Receipt</option>
+            <option value="tax_return_package">Tax Return (1040)</option>
+            <option value="financial_statement">Financial Statement</option>
+          </select>
+          <div class="fh">Override auto-detection if you know the type. Structured mode only.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 3: Queue -->
+  <div class="card" id="queue-card" style="display:none">
+    <h2>3. Processing queue</h2>
+    <div class="queue-header">
+      <div class="queue-stats" id="queue-stats"></div>
+      <div class="queue-actions">
+        <button class="primary" id="start-btn" style="padding:8px 20px;font-size:13px;flex:none">Start Processing</button>
+        <button class="secondary" id="stop-btn" style="padding:8px 14px;font-size:13px;display:none">Stop</button>
+        <button class="sm" id="clear-done-btn">Clear completed</button>
+        <button class="sm" id="clear-all-btn">Clear all</button>
+        <button class="sm" id="download-all-btn" style="display:none">Download All (JSON)</button>
+      </div>
+    </div>
+    <div class="queue-list" id="queue-list"></div>
+    <div class="progress-summary" id="progress-summary" style="display:none">
+      <div class="ps-bar"><div class="ps-fill" id="ps-fill" style="width:0%"></div></div>
+      <div class="ps-text" id="ps-text"></div>
+    </div>
+  </div>
+
+  <!-- Result detail modal -->
+  <div class="result-overlay" id="result-overlay">
+    <div class="result-modal" id="result-modal">
+      <button class="close" id="modal-close">&times;</button>
+      <h3 id="modal-title"></h3>
+      <div class="rm-sub" id="modal-sub"></div>
+      <div id="modal-badges" style="margin-bottom:14px"></div>
+      <div class="summary-grid" id="modal-summary"></div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="sm" id="modal-dl-json">Download JSON</button>
+        <button class="sm" id="modal-dl-text">Download Text</button>
+        <button class="sm" id="modal-copy">Copy JSON</button>
+      </div>
+      <div class="tabs" id="modal-tabs"></div>
+      <div id="modal-tab-contents"></div>
+    </div>
+  </div>
+
+  <!-- Help -->
+  <div class="help-section">
+    <h3>How it works</h3>
+    <div class="help-grid">
+      <div class="help-card"><h4>Batch Queue</h4><p>Drop multiple files at once. They process sequentially through the server. Each file shows real-time status: pending, processing, done, or error. Click any completed file to inspect results.</p></div>
+      <div class="help-card"><h4>Profiles</h4><p><b>Tax</b> uses Donut IRS classifier (28 form types, GPU). <b>Financial</b> enables layout analysis + LLM section labeling. <b>Receipt</b> forces OCR for scans. <b>General</b> is rules-only, no GPU needed.</p></div>
+      <div class="help-card"><h4>Raw vs Structured</h4><p><b>Raw</b>: <code>raw_text</code>, <code>segments</code>, <code>chunks</code>. <b>Structured</b>: adds <code>classification</code> (doc type) and <code>structured.fields</code> (typed data like W-2 boxes, receipt totals).</p></div>
+      <div class="help-card"><h4>OCR &amp; GPU</h4><p><b>PaddleOCR</b> runs on GPU, fast + accurate. <b>Tesseract</b> is CPU with multi-pass. <b>Auto</b> strategy OCRs only when PDF has no text layer.</p></div>
+      <div class="help-card"><h4>Ephemeral</h4><p>Files upload, process in memory, and delete. Results exist only in your browser. Download JSON or text before closing the page.</p></div>
+      <div class="help-card"><h4>API Access</h4><p>This UI calls the same API. See <a href="/docs" style="color:var(--accent)">/docs</a> for Swagger, or <code>curl -X POST /extract -F "file=@doc.pdf"</code> from CLI.</p></div>
+    </div>
+  </div>
+  <footer>loci-extract &mdash; <a href="/docs">API Docs</a> &mdash; <a href="/capabilities">Capabilities</a></footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// --- State ---
+let queue = [];
+let processing = false;
+let stopRequested = false;
+let nextId = 1;
+let currentPipeline = 'ocr'; // 'ocr' | 'vlm' | 'identify' | 'compare'
+let compareAvailable = [];   // populated from /capabilities
+const COMPARE_PIPELINE_LABELS = {
+  parser: 'Parser only (text layer)',
+  ocr_tesseract: 'OCR — Tesseract',
+  ocr_paddle: 'OCR — PaddleOCR (GPU)',
+  force_image_tesseract: 'Force image — Tesseract',
+  force_image_paddle: 'Force image — PaddleOCR (GPU)',
+  vlm_pure: 'VLM pure (image only)',
+  vlm_hybrid: 'VLM hybrid (parser + verify + VLM fallback)',
+};
+const COMPARE_DEFAULT_SELECTION = new Set([
+  'parser', 'ocr_tesseract', 'force_image_paddle', 'vlm_hybrid', 'vlm_pure',
+]);
+
+// --- Pipeline toggle ---
+function setPipeline(mode) {
+  currentPipeline = mode;
+  const buttons = {
+    identify: $('#pipe-id-btn'),
+    vlm: $('#pipe-vlm-btn'),
+    ocr: $('#pipe-ocr-btn'),
+    compare: $('#pipe-compare-btn'),
+  };
+  const panels = {
+    identify: $('#id-settings'),
+    vlm: $('#vlm-settings'),
+    ocr: $('#ocr-settings'),
+    compare: $('#compare-settings'),
+  };
+  for (const [key, btn] of Object.entries(buttons)) {
+    if (key === mode) {
+      btn.style.opacity = '1';
+      btn.style.background = 'var(--accent)';
+      btn.style.color = '#fff';
+      btn.style.border = 'none';
+    } else {
+      btn.style.opacity = '0.5';
+      btn.style.background = 'var(--surface2)';
+      btn.style.color = 'var(--text)';
+      btn.style.border = '1px solid var(--border)';
+    }
+  }
+  for (const [key, panel] of Object.entries(panels)) {
+    panel.style.display = key === mode ? '' : 'none';
+  }
+}
+setPipeline('ocr');
+
+// --- Capabilities ---
+async function loadCaps() {
+  try {
+    const r = await fetch('/capabilities');
+    const c = await r.json();
+    const g = c.gpu?.cuda?.available;
+    $('#status-bar').innerHTML = [
+      chip(g?'green':'red', g?`GPU: ${c.gpu.cuda.device_count} device(s)`:'GPU: off'),
+      chip(c.ocr?.tesseract?'green':'yellow', 'Tesseract'),
+      chip(c.ocr_backends?.paddleocr?'green':'yellow', 'PaddleOCR'),
+      chip(c.profiles?.classifier_models?.['donut-irs']?'green':'yellow', 'Donut IRS'),
+      chip('green', `${(c.profiles?.available||[]).length} profiles`),
+    ].join('');
+    compareAvailable = c.compare?.available_pipelines || [];
+    renderComparePipelineList();
+  } catch(e) { $('#status-bar').innerHTML = chip('red','Server unreachable'); }
+}
+
+function renderComparePipelineList() {
+  const container = $('#compare-pipeline-list');
+  if (!container) return;
+  const all = Object.keys(COMPARE_PIPELINE_LABELS);
+  container.innerHTML = all.map(name => {
+    const avail = compareAvailable.includes(name);
+    const checked = avail && COMPARE_DEFAULT_SELECTION.has(name) ? 'checked' : '';
+    const disabled = avail ? '' : 'disabled';
+    const suffix = avail ? '' : ' <span style="color:var(--error);font-size:10px">(unavailable)</span>';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:${avail?'pointer':'not-allowed'};opacity:${avail?'1':'0.55'}">
+      <input type="checkbox" class="cmp-pipe" value="${name}" ${checked} ${disabled}>
+      <span>${COMPARE_PIPELINE_LABELS[name]}${suffix}</span>
+    </label>`;
+  }).join('');
+}
+function chip(c,t) { return `<span class="status-chip"><span class="dot ${c}"></span>${t}</span>`; }
+loadCaps();
+
+// --- File handling ---
+const dz = $('#drop-zone');
+const fi = $('#file-input');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+fi.addEventListener('change', () => { addFiles(fi.files); fi.value=''; });
+
+function addFiles(files) {
+  const max = 25*1024*1024;
+  for (const f of files) {
+    if (f.size > max) { alert(`${f.name} is too large (${fmtSize(f.size)}). Max 25 MB.`); continue; }
+    if (queue.some(q => q.file.name === f.name && q.file.size === f.size && q.status === 'pending')) continue;
+    queue.push({ id: nextId++, file: f, status: 'pending', result: null, error: null, startTime: null, endTime: null });
+  }
+  renderQueue();
+}
+
+function fmtSize(b) { return b<1024?b+' B':b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
+function fmtDuration(ms) { return ms < 1000 ? ms+'ms' : (ms/1000).toFixed(1)+'s'; }
+
+// --- Queue rendering ---
+function renderQueue() {
+  const qc = $('#queue-card');
+  qc.style.display = queue.length ? '' : 'none';
+
+  const pending = queue.filter(q=>q.status==='pending').length;
+  const proc = queue.filter(q=>q.status==='processing').length;
+  const done = queue.filter(q=>q.status==='done').length;
+  const err = queue.filter(q=>q.status==='error').length;
+  const total = queue.length;
+
+  $('#queue-stats').innerHTML =
+    `<span class="stat"><strong>${total}</strong> total</span>` +
+    `<span class="stat"><strong>${pending}</strong> pending</span>` +
+    (proc ? `<span class="stat" style="color:var(--accent)"><strong>${proc}</strong> processing</span>` : '') +
+    `<span class="stat" style="color:var(--success)"><strong>${done}</strong> done</span>` +
+    (err ? `<span class="stat" style="color:var(--error)"><strong>${err}</strong> failed</span>` : '');
+
+  $('#start-btn').style.display = pending && !processing ? '' : 'none';
+  $('#stop-btn').style.display = processing ? '' : 'none';
+  $('#download-all-btn').style.display = done ? '' : 'none';
+
+  const ps = $('#progress-summary');
+  if (processing || done + err > 0) {
+    ps.style.display = '';
+    const pct = total ? Math.round((done+err)/total*100) : 0;
+    $('#ps-fill').style.width = pct+'%';
+    $('#ps-text').textContent = processing
+      ? `Processing ${done+err+1} of ${total}...`
+      : `Completed: ${done} succeeded, ${err} failed out of ${total}`;
+  } else {
+    ps.style.display = 'none';
+  }
+
+  const list = $('#queue-list');
+  list.innerHTML = queue.map(q => {
+    const cls = `queue-item qi-${q.status} ${q.status}`;
+    const icon = q.status==='pending' ? '&#9711;' : q.status==='processing' ? '<span class="spinner"></span>' : q.status==='done' ? '&#10003;' : '&#10007;';
+    let detail;
+    if (q.status === 'processing') { detail = 'Processing...'; }
+    else if (q.status === 'error') { detail = `Error: ${q.error}`; }
+    else if (q.status === 'done' && q.result && q.result.results && q.result.compared_at) {
+      // Compare result
+      const names = Object.keys(q.result.results);
+      const okCount = names.filter(n => q.result.results[n].ok).length;
+      detail = `<span style="color:var(--accent)">Compared ${okCount}/${names.length} pipelines</span> &mdash; <a href="#" onclick="viewResult(${q.id});return false" style="color:var(--accent)">Open comparison</a>`;
+    } else if (q.status === 'done' && q.result && q.result.suggested_filename) {
+      // Identify result
+      detail = `<span style="color:var(--accent)">${q.result.doc_type}</span> &mdash; ${q.result.suggested_filename} (${(q.result.confidence*100).toFixed(0)}%) &mdash; <a href="#" onclick="viewResult(${q.id});return false" style="color:var(--accent)">Details</a>`;
+    } else if (q.status === 'done') {
+      detail = `Done in ${fmtDuration(q.endTime-q.startTime)} &mdash; <a href="#" onclick="viewResult(${q.id});return false" style="color:var(--accent)">View result</a>`;
+    } else { detail = fmtSize(q.file.size); }
+    const rmBtn = q.status!=='processing' ? `<button class="qi-remove" onclick="removeItem(${q.id})" title="Remove">&times;</button>` : '';
+    const dlBtn = q.status==='done' ? `<button class="sm" onclick="dlItem(${q.id})">JSON</button>` : '';
+    return `<div class="${cls}" id="qi-${q.id}">
+      <div class="qi-status">${icon}</div>
+      <div class="qi-info"><div class="qi-name">${q.file.name}</div><div class="qi-detail">${detail}</div></div>
+      <div class="qi-actions">${dlBtn}${rmBtn}</div>
+    </div>`;
+  }).join('');
+}
+
+window.removeItem = id => { queue = queue.filter(q => q.id !== id); renderQueue(); };
+
+window.dlItem = id => {
+  const q = queue.find(q => q.id === id);
+  if (q?.result) dl(JSON.stringify(q.result, null, 2), q.file.name.replace(/\.[^.]+$/, '') + '.extracted.json', 'application/json');
+};
+
+// --- Processing ---
+$('#start-btn').addEventListener('click', startProcessing);
+$('#stop-btn').addEventListener('click', () => { stopRequested = true; });
+$('#clear-done-btn').addEventListener('click', () => { queue = queue.filter(q => q.status!=='done' && q.status!=='error'); renderQueue(); });
+$('#clear-all-btn').addEventListener('click', () => { if (!processing) { queue = []; renderQueue(); } });
+
+$('#download-all-btn').addEventListener('click', () => {
+  const results = queue.filter(q => q.status==='done').map(q => ({ filename: q.file.name, result: q.result }));
+  dl(JSON.stringify(results, null, 2), 'loci-extract-batch-results.json', 'application/json');
+});
+
+async function startProcessing() {
+  processing = true;
+  stopRequested = false;
+  renderQueue();
+
+  let compareProcessed = false;
+  for (const item of queue) {
+    if (stopRequested) break;
+    if (item.status !== 'pending') continue;
+    if (currentPipeline === 'compare' && compareProcessed) {
+      item.status = 'error';
+      item.error = 'Compare mode processes only one file per run. Remove this item or run separately.';
+      renderQueue();
+      continue;
+    }
+
+    item.status = 'processing';
+    item.startTime = Date.now();
+    renderQueue();
+    scrollToItem(item.id);
+
+    try {
+      const form = new FormData();
+      form.append('file', item.file);
+      let endpoint;
+
+      if (currentPipeline === 'compare') {
+        endpoint = 'extract/compare';
+        const chosen = Array.from($$('.cmp-pipe')).filter(i => i.checked && !i.disabled).map(i => i.value);
+        if (chosen.length === 0) {
+          throw new Error('Select at least one pipeline to compare.');
+        }
+        for (const name of chosen) form.append('pipelines', name);
+      } else if (currentPipeline === 'identify') {
+        endpoint = 'identify';
+      } else if (currentPipeline === 'vlm') {
+        // VLM pipeline: use VLM profile, structured endpoint
+        endpoint = $('#vlm-endpoint').value;
+        const vlmProfile = $('#vlm-model').value;
+        form.append('extraction_profile', vlmProfile);
+        form.append('include_chunks', 'false');
+        if (endpoint === 'extract/structured') {
+          const hint = $('#vlm-doc-hint').value;
+          if (hint) form.append('doc_type_hint', hint);
+        }
+      } else {
+        // OCR pipeline: use OCR settings
+        endpoint = $('#endpoint').value;
+        form.append('include_chunks', $('#include-chunks').value);
+        const profile = $('#profile').value;
+        if (profile) form.append('extraction_profile', profile);
+        const ocr = $('#ocr-strategy').value;
+        if (ocr) form.append('ocr_strategy', ocr);
+        const backend = $('#ocr-backend').value;
+        if (backend) form.append('ocr_backend', backend);
+        if (endpoint === 'extract/structured') {
+          const hint = $('#doc-type-hint').value;
+          if (hint) form.append('doc_type_hint', hint);
+        }
+      }
+
+      const res = await fetch('/' + endpoint, { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      item.result = await res.json();
+      item.status = 'done';
+      if (currentPipeline === 'compare') compareProcessed = true;
+    } catch (e) {
+      item.status = 'error';
+      item.error = e.message;
+    }
+    item.endTime = Date.now();
+    renderQueue();
+  }
+
+  processing = false;
+  stopRequested = false;
+  renderQueue();
+}
+
+function scrollToItem(id) {
+  const el = document.getElementById('qi-' + id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// --- Result modal ---
+window.viewResult = id => {
+  const q = queue.find(q => q.id === id);
+  if (!q?.result) return;
+  const data = q.result;
+
+  // Handle compare results (side-by-side pipeline comparison)
+  if (data && data.results && data.compared_at) {
+    renderCompareModal(q, data);
+    return;
+  }
+
+  // Handle identify results (different shape)
+  if (data.suggested_filename) {
+    $('#modal-title').textContent = q.file.name;
+    $('#modal-sub').textContent = `Identified in ${fmtDuration(q.endTime - q.startTime)} | Strategy: ${data.strategy}`;
+    $('#modal-badges').innerHTML = [
+      `<span class="badge success">${data.doc_type}</span>`,
+      `<span class="badge info">${(data.confidence*100).toFixed(0)}% confidence</span>`,
+      data.strategy ? `<span class="badge">${data.strategy}</span>` : '',
+    ].join(' ');
+    $('#modal-summary').innerHTML = [
+      {l:'Document Type', v: data.doc_type},
+      {l:'Tax Year', v: data.tax_year || 'n/a'},
+      {l:'Entity', v: data.entity_name || 'n/a'},
+      {l:'Confidence', v: (data.confidence*100).toFixed(0)+'%'},
+      {l:'Suggested Name', v: data.suggested_filename},
+      {l:'Original Name', v: data.original_filename},
+    ].map(i => `<div class="summary-item"><div class="slabel">${i.l}</div><div class="svalue">${i.v}</div></div>`).join('');
+    $('#modal-tabs').innerHTML = '<button class="tab active" data-mtab="mt-json">Full JSON</button>';
+    $('#modal-tab-contents').innerHTML = `<div class="tab-content active" id="mt-json"><div class="json-viewer">${synHl(JSON.stringify(data,null,2))}</div></div>`;
+    $('#modal-dl-json').onclick = () => dl(JSON.stringify(data,null,2), q.file.name.replace(/\.[^.]+$/,'')+'.identify.json', 'application/json');
+    $('#modal-dl-text').onclick = () => dl(data.suggested_filename||'', 'suggested-filename.txt', 'text/plain');
+    $('#modal-copy').onclick = () => { navigator.clipboard.writeText(JSON.stringify(data,null,2)); const b=$('#modal-copy'); b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy JSON',1500); };
+    $('#result-overlay').classList.add('visible');
+    return;
+  }
+
+  const isStructured = !!data.raw_extraction;
+  const raw = isStructured ? data.raw_extraction : data;
+  const ext = raw.extraction;
+
+  $('#modal-title').textContent = q.file.name;
+  $('#modal-sub').textContent = `Processed in ${fmtDuration(q.endTime - q.startTime)} | ${fmtSize(q.file.size)} | ${ext.extractor}`;
+
+  const badges = [badgeFor(ext.status)];
+  if (ext.ocr_used) badges.push('<span class="badge info">OCR</span>');
+  if (raw.extra?.ocr_backend) badges.push(`<span class="badge">${raw.extra.ocr_backend}</span>`);
+  if (raw.extra?.extraction_profile) badges.push(`<span class="badge info">${raw.extra.extraction_profile}</span>`);
+  if (isStructured) badges.push(`<span class="badge info">${data.classification.doc_type} (${data.classification.strategy})</span>`);
+  $('#modal-badges').innerHTML = badges.join(' ');
+
+  const si = [
+    { l:'Text', v: raw.raw_text.length+' chars' },
+    { l:'Segments', v: raw.segments.length },
+    { l:'Chunks', v: raw.chunks.length },
+    { l:'Pages', v: raw.metadata.page_count||'n/a' },
+  ];
+  if (isStructured) {
+    si.push({ l:'Doc Type', v: data.classification.doc_type });
+    si.push({ l:'Confidence', v: (data.classification.confidence*100).toFixed(0)+'%' });
+  }
+  if (ext.warnings.length) si.push({ l:'Warnings', v: ext.warnings.length });
+  $('#modal-summary').innerHTML = si.map(i => `<div class="summary-item"><div class="slabel">${i.l}</div><div class="svalue">${i.v}</div></div>`).join('');
+
+  // Tabs
+  const tabs = ['Text','Structured','Segments','Warnings','JSON'];
+  $('#modal-tabs').innerHTML = tabs.map((t,i) => `<button class="tab ${i===0?'active':''}" data-mtab="mt-${t.toLowerCase()}">${t}</button>`).join('');
+
+  const wHtml = ext.warnings.map(w => `<li><span class="code">${w.code}</span> &mdash; ${w.message}</li>`).join('') || '<li style="border-left-color:var(--success);background:rgba(74,222,128,0.08)">No warnings</li>';
+
+  $('#modal-tab-contents').innerHTML = `
+    <div class="tab-content active" id="mt-text"><div class="raw-text">${escHtml(raw.raw_text||'(no text)')}</div></div>
+    <div class="tab-content" id="mt-structured"><div class="json-viewer">${isStructured ? synHl(JSON.stringify(data.structured,null,2)) : '<span style="color:var(--text-dim)">Use Structured mode.</span>'}</div></div>
+    <div class="tab-content" id="mt-segments"><div class="json-viewer">${synHl(JSON.stringify(raw.segments,null,2))}</div></div>
+    <div class="tab-content" id="mt-warnings"><ul class="warnings-list">${wHtml}</ul></div>
+    <div class="tab-content" id="mt-json"><div class="json-viewer">${synHl(JSON.stringify(data,null,2))}</div></div>`;
+
+  $$('#modal-tabs .tab').forEach(t => t.addEventListener('click', () => {
+    $$('#modal-tabs .tab').forEach(x=>x.classList.remove('active'));
+    $$('#modal-tab-contents .tab-content').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    $(`#${t.dataset.mtab}`).classList.add('active');
+  }));
+
+  // Download buttons
+  $('#modal-dl-json').onclick = () => dl(JSON.stringify(data,null,2), q.file.name.replace(/\.[^.]+$/,'')+'.extracted.json', 'application/json');
+  $('#modal-dl-text').onclick = () => dl(raw.raw_text||'', q.file.name.replace(/\.[^.]+$/,'')+'.txt', 'text/plain');
+  $('#modal-copy').onclick = () => { navigator.clipboard.writeText(JSON.stringify(data,null,2)); const b=$('#modal-copy'); b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy JSON',1500); };
+
+  $('#result-overlay').classList.add('visible');
+};
+
+$('#modal-close').addEventListener('click', () => $('#result-overlay').classList.remove('visible'));
+$('#result-overlay').addEventListener('click', e => { if (e.target === $('#result-overlay')) $('#result-overlay').classList.remove('visible'); });
+document.addEventListener('keydown', e => { if (e.key==='Escape') $('#result-overlay').classList.remove('visible'); });
+
+function badgeFor(v) { const c = v==='success'?'success':v==='partial'?'warning':'error'; return `<span class="badge ${c}">${v}</span>`; }
+
+// --- Compare modal ---
+function renderCompareModal(q, data) {
+  const names = Object.keys(data.results);
+  const okNames = names.filter(n => data.results[n].ok);
+  $('#modal-title').textContent = q.file.name;
+  $('#modal-sub').textContent = `Compared ${okNames.length}/${names.length} pipelines | ${fmtSize(q.file.size)} | ${fmtDuration(q.endTime - q.startTime)} wall clock`;
+  $('#modal-badges').innerHTML = names.map(n => {
+    const r = data.results[n];
+    const cls = r.ok ? 'success' : (r.available === false ? 'warning' : 'error');
+    const ms = r.elapsed_ms != null ? ` ${r.elapsed_ms}ms` : '';
+    return `<span class="badge ${cls}">${n}${ms}</span>`;
+  }).join(' ');
+
+  $('#modal-summary').innerHTML = names.map(n => {
+    const r = data.results[n];
+    const val = r.ok ? `${r.raw_text_len} chars` : (r.available === false ? 'unavailable' : 'error');
+    return `<div class="summary-item"><div class="slabel">${n}</div><div class="svalue" style="font-size:13px">${val}</div></div>`;
+  }).join('');
+
+  // Tabs: one per pipeline + an Overview tab with diff tool
+  const tabs = ['Overview', ...names];
+  $('#modal-tabs').innerHTML = tabs.map((t,i) => {
+    const id = 'cmp-' + (i === 0 ? 'overview' : t);
+    return `<button class="tab ${i===0?'active':''}" data-mtab="${id}">${t}</button>`;
+  }).join('');
+
+  const overviewHtml = renderCompareOverview(names, data.results);
+  const pipelineTabs = names.map((n,i) => {
+    return `<div class="tab-content" id="cmp-${n}">${renderCompareTab(data.results[n])}</div>`;
+  }).join('');
+  $('#modal-tab-contents').innerHTML = `
+    <div class="tab-content active" id="cmp-overview">${overviewHtml}</div>
+    ${pipelineTabs}
+  `;
+
+  $$('#modal-tabs .tab').forEach(t => t.addEventListener('click', () => {
+    $$('#modal-tabs .tab').forEach(x=>x.classList.remove('active'));
+    $$('#modal-tab-contents .tab-content').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    $(`#${t.dataset.mtab}`).classList.add('active');
+  }));
+
+  // Wire diff button inside overview
+  const runDiffBtn = document.getElementById('cmp-run-diff');
+  if (runDiffBtn) runDiffBtn.addEventListener('click', () => {
+    const a = document.getElementById('cmp-diff-a').value;
+    const b = document.getElementById('cmp-diff-b').value;
+    const out = document.getElementById('cmp-diff-out');
+    if (!a || !b || a === b) { out.textContent = 'Pick two different pipelines to diff.'; return; }
+    const ta = (data.results[a]?.raw_text_preview || '');
+    const tb = (data.results[b]?.raw_text_preview || '');
+    out.textContent = diffSummary(ta, tb, a, b);
+  });
+
+  $('#modal-dl-json').onclick = () => dl(JSON.stringify(data,null,2), q.file.name.replace(/\.[^.]+$/,'')+'.compare.json', 'application/json');
+  $('#modal-dl-text').onclick = () => {
+    const body = names.map(n => {
+      const r = data.results[n];
+      const head = `=== ${n} (${r.ok ? r.elapsed_ms + 'ms, ' + r.raw_text_len + ' chars' : 'FAILED: ' + (r.error || 'n/a')}) ===`;
+      return head + '\n' + (r.raw_text_preview || '');
+    }).join('\n\n');
+    dl(body, q.file.name.replace(/\.[^.]+$/,'')+'.compare.txt', 'text/plain');
+  };
+  $('#modal-copy').onclick = () => { navigator.clipboard.writeText(JSON.stringify(data,null,2)); const b=$('#modal-copy'); b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy JSON',1500); };
+  $('#result-overlay').classList.add('visible');
+}
+
+function renderCompareOverview(names, results) {
+  const rows = names.map(n => {
+    const r = results[n];
+    const status = r.ok ? `<span class="badge success">ok</span>` : (r.available === false ? `<span class="badge warning">unavailable</span>` : `<span class="badge error">error</span>`);
+    const chars = r.ok ? r.raw_text_len : '-';
+    const ms = r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '-';
+    const doc = r.classification?.doc_type || '-';
+    const src = r.extra?.result_source || '-';
+    const note = r.ok ? '' : (r.error || '');
+    return `<tr>
+      <td style="padding:6px 8px;font-weight:600">${n}</td>
+      <td style="padding:6px 8px">${status}</td>
+      <td style="padding:6px 8px;text-align:right">${chars}</td>
+      <td style="padding:6px 8px;text-align:right">${ms}</td>
+      <td style="padding:6px 8px">${doc}</td>
+      <td style="padding:6px 8px">${src}</td>
+      <td style="padding:6px 8px;color:var(--text-dim);font-size:11px">${escHtml(note)}</td>
+    </tr>`;
+  }).join('');
+
+  const options = names.map(n => `<option value="${n}">${n}</option>`).join('');
+  return `
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+      <thead>
+        <tr style="background:var(--surface2);text-align:left">
+          <th style="padding:6px 8px">Pipeline</th>
+          <th style="padding:6px 8px">Status</th>
+          <th style="padding:6px 8px;text-align:right">Chars</th>
+          <th style="padding:6px 8px;text-align:right">Elapsed</th>
+          <th style="padding:6px 8px">Doc type</th>
+          <th style="padding:6px 8px">Result source</th>
+          <th style="padding:6px 8px">Note</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:8px">Diff two pipelines</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="cmp-diff-a" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px"><option value="">A —</option>${options}</select>
+        <span style="color:var(--text-dim)">vs</span>
+        <select id="cmp-diff-b" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px"><option value="">B —</option>${options}</select>
+        <button class="sm" id="cmp-run-diff">Diff</button>
+      </div>
+      <pre id="cmp-diff-out" style="margin-top:10px;font-size:11px;color:var(--text-dim);white-space:pre-wrap"></pre>
+    </div>
+  `;
+}
+
+function renderCompareTab(r) {
+  if (!r.ok) {
+    const msg = r.error || (r.available === false ? 'Pipeline is not available on this host.' : 'Unknown error.');
+    return `<div style="padding:16px;background:rgba(248,113,113,0.08);border:1px solid var(--error);border-radius:8px;font-size:12px">${escHtml(msg)}</div>`;
+  }
+  const summary = [
+    {l:'Status', v: r.status || 'success'},
+    {l:'Elapsed', v: r.elapsed_ms + 'ms'},
+    {l:'Chars', v: r.raw_text_len},
+    {l:'Segments', v: r.segment_count},
+    {l:'Doc type', v: r.classification?.doc_type || '-'},
+    {l:'Classifier', v: r.classification?.strategy || '-'},
+    {l:'OCR strategy', v: r.ocr_strategy},
+    {l:'OCR backend', v: r.ocr_backend},
+  ].map(i => `<div class="summary-item"><div class="slabel">${i.l}</div><div class="svalue" style="font-size:13px">${escHtml(String(i.v))}</div></div>`).join('');
+
+  const trace = r.extra?.vlm_trace;
+  const traceHtml = trace ? renderVlmTraceTable(trace) : '';
+  const truncBanner = r.raw_text_truncated
+    ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Preview truncated at ${r.raw_text_preview.length} / ${r.raw_text_len} chars — download JSON for full text.</div>`
+    : '';
+  return `
+    <div class="summary-grid" style="margin-bottom:10px">${summary}</div>
+    ${traceHtml}
+    <div style="font-size:12px;font-weight:600;margin:10px 0 6px">Raw text preview</div>
+    ${truncBanner}
+    <div class="raw-text">${escHtml(r.raw_text_preview || '(no text)')}</div>
+    <div style="font-size:12px;font-weight:600;margin:14px 0 6px">Extra metadata</div>
+    <div class="json-viewer">${synHl(JSON.stringify(r.extra || {}, null, 2))}</div>
+  `;
+}
+
+function renderVlmTraceTable(trace) {
+  const pages = trace.pages || [];
+  const rows = pages.map(p => {
+    const verify = p.verify ? `${p.verify.usable ? '&#10003;' : '&#10007;'} ${escHtml(p.verify.reason || '')} (${((p.verify.confidence||0)*100).toFixed(0)}%)` : '-';
+    const vlm = p.vlm ? `${escHtml(p.vlm.attempt || '?')} / ${p.vlm.response_chars||0}ch / ${p.vlm.ms||0}ms` : '-';
+    return `<tr>
+      <td style="padding:4px 8px">${p.page}</td>
+      <td style="padding:4px 8px;font-weight:600;color:${p.stage_selected==='vlm'?'var(--accent)':p.stage_selected==='parser'?'var(--success)':'var(--error)'}">${p.stage_selected}</td>
+      <td style="padding:4px 8px;text-align:right">${p.parser_chars}${p.parser_looked_like_garbage?' &#9888;':''}</td>
+      <td style="padding:4px 8px">${verify}</td>
+      <td style="padding:4px 8px">${vlm}</td>
+      <td style="padding:4px 8px;text-align:right">${p.final_chars}</td>
+      <td style="padding:4px 8px;text-align:right">${p.ms}ms</td>
+    </tr>`;
+  }).join('');
+  const totals = trace.totals || {};
+  return `
+    <div style="font-size:12px;font-weight:600;margin:10px 0 6px">VLM trace (${trace.pipeline})</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Model: ${escHtml(trace.vlm_model||'?')}${trace.verify_model?` | Verify: ${escHtml(trace.verify_model)}`:''} | Parser ${totals.parser_used||0}, VLM ${totals.vlm_used||0}, verify calls ${totals.verify_calls||0}, total ${totals.total_ms||0}ms</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+      <thead>
+        <tr style="background:var(--surface2);text-align:left">
+          <th style="padding:4px 8px">Page</th>
+          <th style="padding:4px 8px">Stage</th>
+          <th style="padding:4px 8px;text-align:right">Parser chars</th>
+          <th style="padding:4px 8px">Verify</th>
+          <th style="padding:4px 8px">VLM</th>
+          <th style="padding:4px 8px;text-align:right">Final</th>
+          <th style="padding:4px 8px;text-align:right">ms</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function diffSummary(a, b, nameA, nameB) {
+  const la = a.length, lb = b.length;
+  let i = 0;
+  while (i < la && i < lb && a[i] === b[i]) i++;
+  if (i === la && i === lb) return `Identical (${la} chars).`;
+  const ctx = 60;
+  const aCtx = a.slice(Math.max(0, i-ctx), i+ctx).replace(/\s+/g,' ');
+  const bCtx = b.slice(Math.max(0, i-ctx), i+ctx).replace(/\s+/g,' ');
+  return [
+    `${nameA}: ${la} chars`,
+    `${nameB}: ${lb} chars`,
+    `Δ length: ${lb - la}`,
+    `First divergence at char ${i}:`,
+    `  ${nameA}: …${aCtx}…`,
+    `  ${nameB}: …${bCtx}…`,
+  ].join('\n');
+}
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function synHl(j) {
+  return escHtml(j)
+    .replace(/"([^"]+)":/g,'<span class="json-key">"$1"</span>:')
+    .replace(/: "([^"]*)"/g,': <span class="json-string">"$1"</span>')
+    .replace(/: (-?\d+\.?\d*)/g,': <span class="json-number">$1</span>')
+    .replace(/: (true|false)/g,': <span class="json-bool">$1</span>')
+    .replace(/: (null)/g,': <span class="json-null">null</span>');
+}
+function dl(content, name, mime) { const u=URL.createObjectURL(new Blob([content],{type:mime})); const a=document.createElement('a'); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); }
+</script>
+</body>
+</html>

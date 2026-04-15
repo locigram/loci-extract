@@ -5,7 +5,7 @@ import re
 from app.normalization import extract_last4, mask_identifier, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import first_source_pages, get_text_lines, search_patterns, snippet_around_match
+from app.structured.common import first_source_pages, get_form_lines, get_form_text, search_patterns, snippet_around_match
 
 
 BOX_PATTERNS = {
@@ -33,9 +33,22 @@ def _extract_labeled_value(text: str, patterns: list[str]) -> str | None:
     return " ".join(group for group in match.groups() if group is not None).strip() if match.groups() else match.group(0).strip()
 
 
+_W2_FORM_SIGNALS = [
+    "wage and tax statement",
+    "form w-2",
+    "employer identification number",
+    "employee's social security",
+    "wages, tips, other compensation",
+    "federal income tax withheld",
+    "social security wages",
+    "medicare wages",
+]
+
+
 def build_w2_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) -> StructuredDocument:
-    text = raw_payload.raw_text
-    lines = get_text_lines(raw_payload)
+    # Use only form data pages, skip instruction/copy pages
+    text = get_form_text(raw_payload, form_signals=_W2_FORM_SIGNALS)
+    lines = get_form_lines(raw_payload, form_signals=_W2_FORM_SIGNALS)
 
     employee_name_patterns = [
         r"employee(?:'s)?\s+name(?:,\s*address,\s*and\s*zip\s*code)?\s*[:#-]?\s*([^\n]+)",

@@ -14,6 +14,7 @@ def build_structured_document(
     raw_payload: ExtractionPayload,
     *,
     mask_pii: bool = True,
+    enable_llm_enrichment: bool = False,
 ) -> StructuredDocument:
     if classification.doc_type == "w2":
         return build_w2_document(raw_payload, mask_pii=mask_pii)
@@ -24,5 +25,7 @@ def build_structured_document(
     if classification.doc_type == "tax_return_package":
         return build_tax_return_package_document(raw_payload, mask_pii=mask_pii)
     if classification.doc_type == "financial_statement":
-        return build_financial_statement_document(raw_payload, mask_pii=mask_pii)
+        return build_financial_statement_document(
+            raw_payload, mask_pii=mask_pii, enable_llm_enrichment=enable_llm_enrichment
+        )
     return unknown_structured_document()

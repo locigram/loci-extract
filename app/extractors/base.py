@@ -21,5 +21,6 @@ class BaseExtractor(ABC):
         mime_type: str,
         *,
         ocr_strategy: str = "auto",
+        ocr_backend: str = "auto",
     ) -> ExtractionPayload:
         raise NotImplementedError

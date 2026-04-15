@@ -28,6 +28,7 @@ class PlainTextExtractor(BaseExtractor):
         mime_type: str,
         *,
         ocr_strategy: str = "auto",
+        ocr_backend: str = "auto",
     ) -> ExtractionPayload:
         text = file_path.read_text(encoding="utf-8", errors="replace")
         document_id = str(uuid4())

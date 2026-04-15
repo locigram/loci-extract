@@ -5,7 +5,7 @@ import re
 from app.normalization import extract_last4, mask_identifier, parse_amount
 from app.review import build_review_metadata
 from app.schemas import ExtractionPayload, StructuredDocument
-from app.structured.common import first_source_pages, search_patterns, snippet_around_match
+from app.structured.common import first_source_pages, get_form_text, search_patterns, snippet_around_match
 
 
 def _extract_value(text: str, patterns: list[str]) -> str | None:
@@ -15,8 +15,20 @@ def _extract_value(text: str, patterns: list[str]) -> str | None:
     return match.group(1).strip()
 
 
+_1099_FORM_SIGNALS = [
+    "1099-nec",
+    "nonemployee compensation",
+    "payer's name",
+    "recipient's name",
+    "payer's tin",
+    "recipient's tin",
+    "federal income tax withheld",
+]
+
+
 def build_1099_nec_document(raw_payload: ExtractionPayload, *, mask_pii: bool = True) -> StructuredDocument:
-    text = raw_payload.raw_text
+    # Use only form data pages, skip instruction/copy pages
+    text = get_form_text(raw_payload, form_signals=_1099_FORM_SIGNALS)
     tax_year_match = re.search(r"1099-nec.*?(20\d{2})", text, flags=re.IGNORECASE | re.DOTALL)
     tax_year = int(tax_year_match.group(1)) if tax_year_match else None
     recipient_name_patterns = [r"recipient(?:'s)?\s+name\s*[:#-]?\s*([^\n]+)"]

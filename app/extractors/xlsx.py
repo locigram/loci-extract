@@ -32,6 +32,7 @@ class XlsxExtractor(BaseExtractor):
         mime_type: str,
         *,
         ocr_strategy: str = "auto",
+        ocr_backend: str = "auto",
     ) -> ExtractionPayload:
         wb = load_workbook(file_path, data_only=True)
         document_id = str(uuid4())
