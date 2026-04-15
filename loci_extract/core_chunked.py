@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from loci_extract.chunker import chunk_for_llm
@@ -63,10 +64,20 @@ def extract_financial_document(
     prompt_tokens_total = 0
     completion_tokens_total = 0
 
-    for chunk in chunks:
+    # Run chunks in parallel — they're independent LLM calls with no
+    # cross-chunk dependency (merge runs after all return). ThreadPool suits
+    # HTTP-bound OpenAI-compat clients; llama-server's cont-batching handles
+    # 2-4 concurrent slots natively. Capped at min(opts.max_parallel, len(chunks))
+    # to avoid thrashing when chunks=1 (most BS/IS docs).
+    max_parallel = max(1, opts.max_parallel)
+    workers = min(max_parallel, len(chunks))
+    if progress and len(chunks) > 1 and workers > 1:
+        progress(f"running {len(chunks)} chunks with {workers}-way parallelism")
+
+    def _run_one(chunk):
         user_text = _build_chunk_user_text(chunk, document_type)
         try:
-            llm_resp = call_llm_raw(
+            return chunk, call_llm_raw(
                 client=client,
                 model_name=opts.model_name,
                 system_prompt=system_prompt,
@@ -75,8 +86,23 @@ def extract_financial_document(
                 max_tokens_override=opts.max_tokens if opts.max_tokens != 4096 else None,
                 temperature=opts.temperature,
                 retries=opts.retry,
-            )
+            ), None
         except Exception as exc:
+            return chunk, None, exc
+
+    chunk_results: list[tuple] = []
+    if workers == 1:
+        chunk_results = [_run_one(c) for c in chunks]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_run_one, c) for c in chunks]
+            chunk_results = [f.result() for f in as_completed(futures)]
+
+    # Re-sort results by chunk_index so merge processes them in source order
+    chunk_results.sort(key=lambda t: t[0].chunk_index)
+
+    for chunk, llm_resp, exc in chunk_results:
+        if exc is not None:
             logger.warning(
                 "Chunk %d/%d LLM call failed: %s",
                 chunk.chunk_index + 1, chunk.total_chunks, exc,

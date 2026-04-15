@@ -381,6 +381,49 @@ def test_csv_shape_a_for_balance_sheet(monkeypatch, tmp_path):
     assert "Total Cash" in out
 
 
+def test_parallel_chunks_calls_all_chunks(monkeypatch, tmp_path):
+    """When a doc is chunked, max_parallel > 1 must still dispatch every chunk
+    and the final Extraction must aggregate all partials."""
+    pdf = _make_pdf(tmp_path, "gl.pdf", ["stub"])
+    # Force GL detection so the chunker kicks in with account-boundary split
+    _set_page_text(monkeypatch, (
+        "General Ledger\nFrom 01/01/2025 To 01/31/2025\n"
+        "Date Type Number Memo Debit Credit Balance\nTransaction detail\n\n"
+        + "\n\n".join(f"{i:04d}-0000 Account {i}\n" + ("Lorem ipsum dolor " * 30)
+                        for i in range(6))
+    ))
+
+    call_counter = {"n": 0}
+
+    def slow_fake_llm(**kw):
+        call_counter["n"] += 1
+        return {
+            "raw": json.dumps({
+                "entity": {"name": "Test Entity", "software": "QuickBooks Desktop"},
+                "accounts": [{"account_name": f"Account chunk {call_counter['n']}",
+                              "beginning_balance": 0.0, "ending_balance": 0.0,
+                              "transactions": []}],
+                "metadata": {"notes": []},
+            }),
+            "prompt_tokens": 100, "completion_tokens": 500,
+            "finish_reason": "stop", "llm_calls": 1, "llm_retries": 0,
+        }
+    monkeypatch.setattr(cc, "call_llm_raw", slow_fake_llm)
+
+    opts = ExtractionOptions(
+        model_url="http://stub", model_name="stub", retry=0,
+        chunk_size_tokens=150,  # force chunking
+        max_parallel=4,
+    )
+    ext = extract_document(pdf, opts)
+    # Every chunk produced a partial; merged GL has >= 1 account
+    assert call_counter["n"] >= 2, f"expected multiple chunks, got {call_counter['n']}"
+    doc = ext.documents[0]
+    assert doc.document_type == "GENERAL_LEDGER"
+    # Account list merged from N partials
+    assert len(doc.data["accounts"]) == call_counter["n"]
+
+
 def test_lacerte_raises_for_financial(monkeypatch, tmp_path):
     pdf = _make_pdf(tmp_path, "bs3.pdf", ["stub"])
     _set_page_text(monkeypatch, "Balance Sheet\nTotal Assets 1\nCurrent Assets\nAccounts Receivable")

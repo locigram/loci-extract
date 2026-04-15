@@ -90,6 +90,7 @@ Additional CLI flags:
 | `--chunk-size 6000` | Max input tokens per LLM chunk for long GL / statement exports |
 | `--no-verify-totals` | Skip Python-side totals verification for financial documents |
 | `--family {tax,financial_simple,financial_multi,financial_txn,financial_reserve}` | Force family dispatch (overrides detector) |
+| `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential). Multi-chunk GL / long comparison reports get Nx speedup bounded by the LLM server's batch capacity. |
 | `--no-redact` | Disable SSN/TIN last-4 masking on output |
 
 ---

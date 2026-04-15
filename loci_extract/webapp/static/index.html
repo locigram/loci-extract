@@ -66,17 +66,19 @@
 <div class="container">
   <header>
     <h1><span>loci</span>-extract</h1>
-    <p>Local-first tax document extraction. W-2, 1099, 1098, K-1 → JSON / CSV / Lacerte / TXF.</p>
+    <p>Local-first tax + financial extraction. W-2 / 1099 / 1098 / K-1 PDFs and
+       Balance Sheet / P&amp;L / GL / Aging from QuickBooks XLSX exports → JSON / CSV / Lacerte / TXF.</p>
     <div class="status-bar" id="status"></div>
   </header>
 
   <div class="card">
-    <h2>1. Drop tax PDFs</h2>
-    <p class="sub">Drop one or many — they process sequentially. PDFs only. Files are extracted in memory and deleted.</p>
+    <h2>1. Drop files</h2>
+    <p class="sub">PDFs (tax + AppFolio financial) or XLSX (QuickBooks Desktop exports: P&amp;L, BS, GL, Trial Balance).
+                   Files are processed in memory and deleted.</p>
     <div class="drop" id="drop">
-      <input type="file" id="fi" multiple accept=".pdf">
+      <input type="file" id="fi" multiple accept=".pdf,.xlsx,.xlsm,.xls">
       <div class="ico">📄</div>
-      <div class="label">Drop PDFs here or click to browse</div>
+      <div class="label">Drop PDFs or XLSX here — or click to browse</div>
       <div class="hint">Nothing leaves your machine — calls go to the configured local LLM.</div>
     </div>
   </div>
@@ -267,14 +269,118 @@ function render() {
 
 function escapeHtml(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+const FINANCIAL_TYPES = new Set([
+  'BALANCE_SHEET', 'INCOME_STATEMENT', 'INCOME_STATEMENT_COMPARISON',
+  'BUDGET_VS_ACTUAL', 'TRIAL_BALANCE', 'ACCOUNTS_RECEIVABLE_AGING',
+  'ACCOUNTS_PAYABLE_AGING', 'GENERAL_LEDGER', 'RESERVE_ALLOCATION',
+]);
+
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (isNaN(n)) return String(v);
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD',
+                                      minimumFractionDigits: 2 });
+}
+
+function renderFinancialSummary(doc) {
+  const data = doc.data || {};
+  const meta = doc.metadata || {};
+  const entity = data.entity || {};
+  const type = doc.document_type;
+
+  const totals = [];
+  if (data.assets?.total_assets !== undefined)
+    totals.push(['Total Assets', fmtMoney(data.assets.total_assets)]);
+  if (data.liabilities?.total_liabilities !== undefined)
+    totals.push(['Total Liabilities', fmtMoney(data.liabilities.total_liabilities)]);
+  const eqTot = data.equity?.total_equity_reported ?? data.equity?.total_equity;
+  if (eqTot !== undefined)
+    totals.push(['Total Equity', fmtMoney(eqTot)]);
+  if (data.income?.total !== undefined)
+    totals.push(['Total Income', fmtMoney(data.income.total)]);
+  if (data.expenses?.total !== undefined)
+    totals.push(['Total Expenses', fmtMoney(data.expenses.total)]);
+  if (data.net_income_reported !== undefined)
+    totals.push(['Net Income (reported)', fmtMoney(data.net_income_reported)]);
+  if (data.net_income_calculated !== undefined)
+    totals.push(['Net Income (calculated)', fmtMoney(data.net_income_calculated)]);
+  if (data.total_debits !== undefined)
+    totals.push(['Total Debits', fmtMoney(data.total_debits)]);
+  if (data.total_credits !== undefined)
+    totals.push(['Total Credits', fmtMoney(data.total_credits)]);
+
+  const derived = [];
+  if (data.equity?.retained_earnings_calculated !== undefined)
+    derived.push(['Retained Earnings (calc)', fmtMoney(data.equity.retained_earnings_calculated)]);
+  if (data.total_reserve_balance_calculated !== undefined)
+    derived.push(['Total Reserve (calc)', fmtMoney(data.total_reserve_balance_calculated)]);
+  if (data.total_bank_balance_calculated !== undefined)
+    derived.push(['Total Bank (calc)', fmtMoney(data.total_bank_balance_calculated)]);
+
+  const badges = [];
+  if (meta.totals_verified === true)
+    badges.push(`<span style="padding:2px 8px;border-radius:4px;background:var(--success);color:#fff;font-size:11px;font-weight:600">✓ Totals verified</span>`);
+  else if (meta.totals_verified === false)
+    badges.push(`<span style="padding:2px 8px;border-radius:4px;background:var(--error);color:#fff;font-size:11px;font-weight:600">✗ Totals mismatch</span>`);
+  if (meta.balance_sheet_balanced === true)
+    badges.push(`<span style="padding:2px 8px;border-radius:4px;background:var(--success);color:#fff;font-size:11px;font-weight:600">✓ BS balances</span>`);
+  else if (meta.balance_sheet_balanced === false)
+    badges.push(`<span style="padding:2px 8px;border-radius:4px;background:var(--error);color:#fff;font-size:11px;font-weight:600">✗ BS off</span>`);
+  if (meta.encoding_broken)
+    badges.push(`<span style="padding:2px 8px;border-radius:4px;background:var(--warning);color:#000;font-size:11px;font-weight:600">encoding repaired</span>`);
+
+  const mismatchList = (meta.totals_mismatches || []).slice(0, 5).map(m =>
+    `<li style="font-size:12px;color:var(--text-dim)"><strong>${escapeHtml(m.section)}</strong>: reported ${fmtMoney(m.reported)} vs computed ${fmtMoney(m.computed)} (Δ ${fmtMoney(m.delta)})</li>`
+  ).join('');
+
+  return `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;background:rgba(108,140,255,0.05)">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <div>
+          <div style="font-size:15px;font-weight:600">${escapeHtml(entity.name || '—')}</div>
+          <div style="font-size:12px;color:var(--text-dim)">
+            ${escapeHtml(type)} · ${escapeHtml(entity.software || 'Unknown software')}
+            ${entity.period_start ? ' · ' + entity.period_start + '→' + (entity.period_end || '?') : (entity.period_end ? ' · as of ' + entity.period_end : '')}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${badges.join('')}</div>
+      </div>
+      ${totals.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:10px">
+        ${totals.map(([label, val]) => `<div style="background:var(--surface2);padding:8px 10px;border-radius:6px">
+          <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase">${label}</div>
+          <div style="font-size:14px;font-weight:600;font-variant-numeric:tabular-nums">${val}</div>
+        </div>`).join('')}
+      </div>` : ''}
+      ${derived.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">Computed in Python (not from LLM)</div>
+        ${derived.map(([l, v]) => `<div style="display:inline-block;margin-right:14px;font-size:12px"><span style="color:var(--text-dim)">${l}:</span> <strong>${v}</strong></div>`).join('')}
+      </div>` : ''}
+      ${mismatchList ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--warning)">${meta.totals_mismatches.length} mismatch(es)</summary>
+        <ul style="margin:6px 0 0 20px">${mismatchList}</ul></details>` : ''}
+      ${meta.notes?.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text-dim)">Model notes (${meta.notes.length})</summary>
+        <ul style="margin:6px 0 0 20px">${meta.notes.slice(0, 5).map(n => `<li style="font-size:12px;color:var(--text-dim)">${escapeHtml(n)}</li>`).join('')}</ul></details>` : ''}
+    </div>`;
+}
+
 window.showResult = function(id) {
   const q = queue.find(x => x.id === id);
   if (!q || !q.result) return;
   $('#mt').textContent = q.file.name;
   $('#msub').textContent = `${q.fmt.toUpperCase()} · ${fmtDuration(q.t1 - q.t0)}`;
   const text = q.fmt === 'json' ? JSON.stringify(q.result, null, 2) : q.result;
-  $('#mc').innerHTML = `<div class="jv">${escapeHtml(text)}</div>`;
-  $('#mdl').onclick = () => download(text, q.file.name.replace(/\.pdf$/i, '') + '.' + extFor(q.fmt), mimeFor(q.fmt));
+
+  // Financial Summary block: shown when result is JSON and first document is financial
+  let summaryHtml = '';
+  if (q.fmt === 'json' && q.result?.documents?.length) {
+    for (const doc of q.result.documents) {
+      if (FINANCIAL_TYPES.has(doc.document_type)) {
+        summaryHtml += renderFinancialSummary(doc);
+      }
+    }
+  }
+  $('#mc').innerHTML = summaryHtml + `<div class="jv">${escapeHtml(text)}</div>`;
+  $('#mdl').onclick = () => download(text, q.file.name.replace(/\.(pdf|xlsx|xls|xlsm)$/i, '') + '.' + extFor(q.fmt), mimeFor(q.fmt));
   $('#mcp').onclick = () => { navigator.clipboard.writeText(text); const b = $('#mcp'); b.textContent = 'Copied!'; setTimeout(() => b.textContent = 'Copy', 1500); };
   $('#ov').classList.add('on');
 };

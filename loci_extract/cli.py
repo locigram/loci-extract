@@ -115,6 +115,13 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=None,
         help="Force document family (default: auto-detect)",
     )
+    p.add_argument(
+        "--parallel-chunks",
+        type=int,
+        default=4,
+        dest="max_parallel",
+        help="Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential)",
+    )
     p.add_argument("--verbose", action="store_true", help="Pipeline steps to stderr")
     p.add_argument("--version", action="version", version=f"loci-extract {__version__}")
     return p
@@ -137,6 +144,7 @@ def _options_from_args(args: argparse.Namespace) -> ExtractionOptions:
         verify_totals=args.verify_totals,
         fix_orientation=args.fix_orientation,
         force_family=args.family,
+        max_parallel=args.max_parallel,
     )
 
 

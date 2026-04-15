@@ -61,6 +61,7 @@ class ExtractionOptions:
     verify_totals: bool = True     # run Python-side totals verifier on financial docs
     fix_orientation: bool = True   # auto-rotate scanned-sideways pages via Tesseract OSD
     force_family: str | None = None  # override family detection: "tax" | "financial_simple" | ...
+    max_parallel: int = 4          # concurrent chunk LLM calls; 1 = sequential
 
 
 # ---------------------------------------------------------------------------
