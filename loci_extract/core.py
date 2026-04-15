@@ -107,6 +107,16 @@ def _gather_page_text(
     client,
     progress: ProgressCallback | None,
 ) -> str:
+    # Step 0: global strategy check (pdffonts Identity-H with uni=no → OCR).
+    # This must run before detect_page_types — encoding-broken PDFs have a
+    # non-empty but garbage text layer, and detect_page_types's char-count
+    # threshold would misclassify all pages as "text".
+    from loci_extract.detector import get_extraction_strategy
+    strategy_info = get_extraction_strategy(pdf_path)
+    encoding_broken = strategy_info.get("encoding_broken", False)
+    if encoding_broken and progress:
+        progress(f"strategy: {strategy_info['reason'][:100]}")
+
     page_types = detect_page_types(pdf_path)
     if not page_types:
         raise RuntimeError(f"Could not detect pages in {pdf_path}")
@@ -114,8 +124,14 @@ def _gather_page_text(
         progress(f"pages detected: {len(page_types)} ({sum(1 for v in page_types.values() if v == 'text')} text, "
                  f"{sum(1 for v in page_types.values() if v == 'image')} image)")
 
-    text_pages = [p for p, t in page_types.items() if t == "text"]
-    image_pages = [p for p, t in page_types.items() if t == "image"]
+    if encoding_broken:
+        # Force every page through the image path regardless of pdfminer's
+        # text-length vote. The text layer is glyph IDs, not Unicode.
+        text_pages: list[int] = []
+        image_pages = list(page_types.keys())
+    else:
+        text_pages = [p for p, t in page_types.items() if t == "text"]
+        image_pages = [p for p, t in page_types.items() if t == "image"]
 
     page_text: dict[int, str] = {}
 
@@ -172,16 +188,24 @@ def _gather_page_text(
 # ---------------------------------------------------------------------------
 
 
+_XLSX_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+
+
 def extract_document(
     pdf_path: str | Path,
     opts: ExtractionOptions,
     *,
     progress_callback: ProgressCallback | None = None,
 ) -> Extraction:
-    """Extract one PDF → validated ``Extraction``.
+    """Extract one document (PDF or XLSX) → validated ``Extraction``.
+
+    Dispatch by file extension:
+      - ``.pdf``       → full PDF pipeline (detector → OCR/vision → LLM)
+      - ``.xlsx/...``  → openpyxl text flatten → LLM (skips OCR/vision/encoding
+                         detection entirely — XLSX is already structured data)
 
     Raises ``json.JSONDecodeError`` / ``pydantic.ValidationError`` if the
-    LLM fails all retries, ``RuntimeError`` on empty/invalid PDFs.
+    LLM fails all retries, ``RuntimeError`` on empty/invalid input.
     """
     pdf_path = Path(pdf_path)
     client = make_client(opts.model_url, api_key=opts.api_key)
@@ -189,9 +213,18 @@ def extract_document(
     if progress_callback:
         progress_callback(f"opening {pdf_path}")
 
-    raw_text = _gather_page_text(pdf_path, opts, client, progress_callback)
-    if not raw_text.strip():
-        raise RuntimeError(f"No text could be recovered from {pdf_path} (all pages empty after OCR/vision)")
+    # XLSX path: no OCR, no vision, no encoding checks — read cells directly.
+    if pdf_path.suffix.lower() in _XLSX_EXTS:
+        from loci_extract.xlsx import extract_xlsx_text
+        if progress_callback:
+            progress_callback(f"reading XLSX via openpyxl ({pdf_path.name})")
+        raw_text = extract_xlsx_text(pdf_path)
+        if not raw_text.strip():
+            raise RuntimeError(f"No cells could be read from {pdf_path}")
+    else:
+        raw_text = _gather_page_text(pdf_path, opts, client, progress_callback)
+        if not raw_text.strip():
+            raise RuntimeError(f"No text could be recovered from {pdf_path} (all pages empty after OCR/vision)")
 
     # Detector hints (keyword-based). We prepend per-doc nudges for every
     # doc type the detector found — the model sees a short "your document(s)

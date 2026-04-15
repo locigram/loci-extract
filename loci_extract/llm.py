@@ -270,10 +270,12 @@ TOKEN_BUDGETS: dict[str, int] = {
     "INCOME_STATEMENT": 4096,
     "CASH_FLOW_STATEMENT": 3000,
     "TRIAL_BALANCE": 6000,
-    # Financial — multi-column
-    "INCOME_STATEMENT_COMPARISON": 12000,
-    "BUDGET_VS_ACTUAL": 8000,
-    "QB_PROFIT_LOSS": 8000,
+    # Financial — multi-column. These reports (12-month P&L, Budget vs Actual
+    # with $/% variance columns) can have 200+ accounts × 10+ columns. Need
+    # generous output budgets; finish_reason=length retry bumps 1.5x further.
+    "INCOME_STATEMENT_COMPARISON": 24000,
+    "BUDGET_VS_ACTUAL": 24000,
+    "QB_PROFIT_LOSS": 16000,
     # Financial — transaction-level (use chunking)
     "GENERAL_LEDGER": 8000,
     "ACCOUNTS_RECEIVABLE_AGING": 4096,

@@ -427,6 +427,147 @@ Schema: {schema}
 """ + _CANONICAL_FOOTER
 
 
+# Per-doc-type schema hints injected into family prompts via the {schema}
+# placeholder. These are compact shape examples — field names and nesting,
+# not full pydantic definitions. Critical: all amount fields are floats
+# (not nested objects), sections follow the Section shape with inline
+# section_total, and extras the model invents are discarded at validation.
+
+_SCHEMA_HINT_BY_TYPE: dict[str, str] = {
+    "BALANCE_SHEET": """{
+  "entity": {"name": "string", "type": "HOA|LLC|Corp|...", "accounting_basis": "Cash|Accrual",
+             "period_end": "YYYY-MM-DD", "software": "QuickBooks Desktop|AppFolio|...",
+             "software_metadata": {"raw": {}, "properties": null, "accounting_basis": null}},
+  "assets": {
+    "sections": [
+      {"section_name": "Current Assets", "accounts": [
+         {"account_number": "1018-0000", "account_name": "Operating", "balance": 0.0}
+       ],
+       "section_total": 0.0,
+       "subsections": []}
+    ],
+    "total_assets": 0.0
+  },
+  "liabilities": {"sections": [...], "total_liabilities": 0.0},
+  "equity":      {"sections": [...], "total_equity_reported": 0.0},
+  "total_liabilities_and_equity_reported": 0.0,
+  "metadata": {"notes": ["any unusual observations"]}
+}""",
+
+    "INCOME_STATEMENT": """{
+  "entity": {"name": "string", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD",
+             "accounting_basis": "Cash|Accrual", "software": "..."},
+  "income":   {"sections": [{"section_name": "...", "accounts": [
+                  {"account_number": null, "account_name": "...", "amount": 0.0}],
+                 "section_total": 0.0}],
+               "total": 0.0},
+  "expenses": {"sections": [...], "total": 0.0},
+  "other_income": null,
+  "operating_income_reported": 0.0,
+  "net_income_reported": 0.0,
+  "metadata": {"notes": []}
+}""",
+
+    "INCOME_STATEMENT_COMPARISON": """{
+  "entity": {"name": "string", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD",
+             "software": "QuickBooks Desktop|AppFolio|..."},
+  "columns": [
+    {"key": "jan_dec_25_actual", "label": "Jan - Dec 25",  "period_start": "2025-01-01",
+     "period_end": "2025-12-31", "column_type": "actual"},
+    {"key": "jan_dec_24_actual", "label": "Jan - Dec 24",  "period_start": "2024-01-01",
+     "period_end": "2024-12-31", "column_type": "actual"},
+    {"key": "dollar_change",     "label": "$ Change",     "column_type": "variance_dollar"}
+  ],
+  "line_items": [
+    {"account_number": null, "account_name": "Services Income",
+     "section": "Income", "subsection": null,
+     "row_type": "account",
+     "values": {"jan_dec_25_actual": 0.0, "jan_dec_24_actual": 3117100.77, "dollar_change": -3117100.77}}
+  ],
+  "metadata": {"notes": []}
+}""",
+
+    "BUDGET_VS_ACTUAL": """{
+  "entity": {"name": "string", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD"},
+  "columns": [
+    {"key": "ytd_actual",        "label": "YTD Actual",   "column_type": "actual"},
+    {"key": "ytd_budget",        "label": "YTD Budget",   "column_type": "budget"},
+    {"key": "dollar_variance",   "label": "$ Variance",   "column_type": "variance_dollar"},
+    {"key": "annual_budget",     "label": "Annual Budget","column_type": "budget"}
+  ],
+  "line_items": [{"account_number": null, "account_name": "...", "section": "...",
+                   "row_type": "account", "values": {"...": 0.0}}],
+  "metadata": {"notes": []}
+}""",
+
+    "TRIAL_BALANCE": """{
+  "entity": {"name": "...", "period_end": "YYYY-MM-DD", "software": "..."},
+  "accounts": [
+    {"account_number": "1000", "account_name": "Cash", "account_type": "Bank",
+     "debit": 45230.00, "credit": 0.0}
+  ],
+  "total_debits": 0.0,
+  "total_credits": 0.0,
+  "difference": 0.0,
+  "metadata": {"notes": []}
+}""",
+
+    "GENERAL_LEDGER": """{
+  "entity": {"name": "...", "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD",
+             "software": "QuickBooks Desktop"},
+  "accounts": [
+    {"account_number": null, "account_name": "Bank of America-7950",
+     "account_type": "Bank",
+     "beginning_balance": 0.0, "ending_balance": 18167.14,
+     "transactions": [
+       {"date": "2025-01-05", "type": "Check", "number": "1042",
+        "name": "Payee", "memo": "...", "split": "Expense Account",
+        "debit": 245.00, "credit": null, "balance": 31755.00,
+        "row_type": "transaction"}
+     ]}
+  ],
+  "metadata": {"notes": []}
+}""",
+
+    "ACCOUNTS_RECEIVABLE_AGING": """{
+  "entity": {"name": "...", "software": "..."},
+  "report_type": "AR",
+  "as_of": "YYYY-MM-DD",
+  "aging_buckets": ["current", "1_to_30", "31_to_60", "61_to_90", "over_90"],
+  "rows": [{"name": "Client A", "current": 5000, "days_31_60": 1200, "total": 6200}],
+  "totals": {"name": "TOTAL", "current": 0, "total": 0},
+  "metadata": {"notes": []}
+}""",
+
+    "ACCOUNTS_PAYABLE_AGING": """{
+  "entity": {"name": "...", "software": "..."},
+  "report_type": "AP",
+  "as_of": "YYYY-MM-DD",
+  "aging_buckets": ["current", "1_to_30", "31_to_60", "61_to_90", "over_90"],
+  "rows": [...],
+  "totals": {...},
+  "metadata": {"notes": []}
+}""",
+
+    "RESERVE_ALLOCATION": """{
+  "entity": {"name": "...", "software": "AppFolio|..."},
+  "components": [
+    {"account_number": "3015-0000", "component_name": "Tile/Shake Roof",
+     "current_balance": 694334.24, "annual_contribution": null,
+     "fully_funded_balance": null, "percent_funded": null}
+  ],
+  "bank_accounts": [
+    {"account_number": "1021-0000", "account_name": "Reserve Bank", "balance": 328402.40}
+  ],
+  "metadata": {"notes": []}
+}""",
+}
+
+
+def _schema_hint_for(document_type: str) -> str:
+    return _SCHEMA_HINT_BY_TYPE.get(document_type, "")
+
+
 _PROMPT_BY_FAMILY: dict[DocumentFamily, str] = {
     DocumentFamily.TAX: TAX_SYSTEM_PROMPT,
     DocumentFamily.FINANCIAL_SIMPLE: FINANCIAL_SIMPLE_SYSTEM_PROMPT,
@@ -442,13 +583,19 @@ def get_prompt(document_type: str, schema_hint: str = "") -> str:
     Tax family returns ``TAX_SYSTEM_PROMPT`` unchanged (no ``{schema}``
     substitution — tax prompts have the schema baked in).
     Financial family prompts have ``{schema}`` placeholder filled with
-    ``schema_hint`` if provided, else with a generic note.
+    ``schema_hint`` if provided, else the canonical per-doc-type hint from
+    ``_SCHEMA_HINT_BY_TYPE``, else a generic note.
     """
     family = DOCUMENT_FAMILY_MAP.get(document_type, DocumentFamily.FINANCIAL_SIMPLE)
     template = _PROMPT_BY_FAMILY[family]
     if family == DocumentFamily.TAX:
         return template
-    return template.replace("{schema}", schema_hint or f'(see schema for {document_type})')
+    resolved_hint = (
+        schema_hint
+        or _schema_hint_for(document_type)
+        or f"(see the pydantic model for {document_type})"
+    )
+    return template.replace("{schema}", resolved_hint)
 
 
 __all__ = [

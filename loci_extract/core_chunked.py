@@ -104,11 +104,35 @@ def extract_financial_document(
             continue
 
     if not partials:
-        # All chunks failed — return an empty Extraction so the batch path can
-        # report the failure without crashing.
+        # All chunks failed. Emit a visible error and return a document
+        # carrying the failure diagnostics in metadata so downstream CSV /
+        # JSON consumers can detect it rather than seeing a silently-empty
+        # Extraction. Batch path continues past this so one bad file doesn't
+        # abort a whole directory run.
+        msg = (
+            f"financial extraction failed: {document_type} produced 0 valid "
+            f"chunks after {total_calls} LLM call(s), {total_retries} retry(ies); "
+            f"last finish_reason={finish_reasons[-1] if finish_reasons else 'n/a'}. "
+            f"Common cause: response token budget too small for a long "
+            f"multi-column report. Try a larger model ctx window or "
+            f"--chunk-size lower to split input into more chunks."
+        )
+        logger.error(msg)
         if progress:
-            progress("extraction failed: no parsable partial results")
-        return Extraction(documents=[])
+            progress(f"ERROR: {msg}")
+        failed_doc = Document(
+            document_type=document_type,
+            tax_year=2025,
+            data={"entity": {"name": "EXTRACTION FAILED"}},
+            metadata={
+                "notes": [msg],
+                "totals_verified": False,
+                "llm_calls": total_calls,
+                "llm_retries": total_retries,
+                "finish_reason": finish_reasons[-1] if finish_reasons else None,
+            },
+        )
+        return Extraction(documents=[failed_doc])
 
     merged = _merge_chunks(partials, document_type)
 

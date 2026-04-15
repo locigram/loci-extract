@@ -169,12 +169,25 @@ def _check_pdffonts(pdf_path: str | Path) -> list[str]:
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return []
+    # The specific failure mode is Identity-H / Identity-V CID encoding with
+    # no ToUnicode map. CID encodings use 2-byte glyph IDs that aren't standard
+    # Unicode codepoints, so without a ToUnicode table pdfminer extracts
+    # meaningless glyph indices. Single-byte encodings (MacRoman, WinAnsi,
+    # etc.) with uni=no still decode correctly because the encoding name
+    # itself maps to known characters.
     bad: list[str] = []
     for line in result.stdout.strip().split("\n")[2:]:
-        cols = line.split()
-        # pdffonts columns: name type encoding emb sub uni object-ID
-        if len(cols) >= 7 and cols[6] == "no":
-            bad.append(cols[0])
+        if not re.search(r"\bIdentity-[HV]\b", line):
+            continue
+        tokens = line.split()
+        if len(tokens) < 4:
+            continue
+        # pdffonts trailing columns are: ... emb sub uni object-ID(=2 tokens).
+        # So uni sits at tokens[-4] when object-ID is "N M" (2 tokens), and
+        # at tokens[-3] for single-token object IDs. Check both.
+        uni_candidates = tokens[-4:-2] + tokens[-3:-2]
+        if "no" in uni_candidates:
+            bad.append(tokens[0])
     return bad
 
 
@@ -619,6 +632,12 @@ FINANCIAL_SIGNATURES: dict[str, list[str]] = {
         r"(?:prior year|last year)\s+(?:actual|budget)",
         r"\$\s+var(?:iance)?",
         r"%\s+var(?:iance)?",
+        # QB Desktop 2-period comparison: "Jan - Dec 25" and "Jan - Dec 24"
+        # with "$ Change" column heading.
+        r"jan\s*-\s*dec\s*\d{2,4}",
+        r"\$\s*change",
+        # Two date columns next to each other in period-end format
+        r"dec\s+\d{1,2},\s+\d{2,4}.*dec\s+\d{1,2},\s+\d{2,4}",
     ],
     "BUDGET_VS_ACTUAL": [
         r"annual budget",
@@ -637,6 +656,10 @@ FINANCIAL_SIGNATURES: dict[str, list[str]] = {
         r"general ledger",
         r"transaction detail",
         r"(?:date|memo|ref)\s+(?:debit|credit)\s+balance",
+        # QB Desktop GL column header row:
+        # "Type Date Num Adj Name Memo Split Debit Credit Balance"
+        r"\btype\b.*\bdate\b.*\bnum\b.*\bsplit\b.*\bdebit\b.*\bcredit\b",
+        r"\bmemo\b.*\bsplit\b.*\bdebit\b",
     ],
     "TRIAL_BALANCE": [
         r"trial balance",
@@ -657,6 +680,11 @@ FINANCIAL_SIGNATURES: dict[str, list[str]] = {
         r"liabilities\s+[&and]+\s+(?:capital|equity|stockholders)",
         r"current assets",
         r"accounts receivable",
+        # QB Desktop BS formatting
+        r"total\s+liabilities\s*&\s*equity",
+        r"total\s+current\s+assets",
+        r"total\s+fixed\s+assets",
+        r"total\s+other\s+assets",
     ],
     "INCOME_STATEMENT": [
         r"(?:income|profit)\s+(?:and\s+loss|statement|p&l)",
@@ -664,6 +692,12 @@ FINANCIAL_SIGNATURES: dict[str, list[str]] = {
         r"total expenses",
         r"net (?:income|loss|operating)",
         r"operating income",
+        # QB Desktop P&L structure
+        r"ordinary\s+income/expense",
+        r"cost\s+of\s+goods\s+sold",
+        r"gross\s+profit",
+        r"net\s+ordinary\s+income",
+        r"total\s+cogs",
     ],
 }
 
@@ -683,12 +717,35 @@ _FINANCIAL_PRIORITY = [
 
 
 def detect_financial_document_type(text: str) -> str:
-    """Return the best-matching financial document type, or "FINANCIAL_UNKNOWN"."""
+    """Return the best-matching financial document type, or "FINANCIAL_UNKNOWN".
+
+    Specialization rule: when a more specific variant scores >= 2 (multiple
+    specialization signals), prefer it over its base type even if the base
+    scored higher overall on generic structure words. This prevents QB 2-period
+    P&Ls (which trigger both base INCOME_STATEMENT structure AND the
+    COMPARISON period-column markers) from collapsing to the single-period
+    schema."""
     text_lower = text.lower()
     scores = {
         doc_type: sum(1 for p in FINANCIAL_SIGNATURES.get(doc_type, []) if re.search(p, text_lower))
         for doc_type in _FINANCIAL_PRIORITY
     }
+
+    # Specialization overrides: (specific, base) — specific wins when
+    # specialization signals >= 2 AND base also matched.
+    specializations = [
+        ("INCOME_STATEMENT_COMPARISON", "INCOME_STATEMENT"),
+        ("BUDGET_VS_ACTUAL", "INCOME_STATEMENT"),
+    ]
+    for specific, base in specializations:
+        if (
+            scores.get(specific, 0) >= 2
+            and scores.get(base, 0) > 0
+            and scores[specific] < scores[base]
+        ):
+            # Boost the specialization over the base.
+            scores[specific] = scores[base] + 1
+
     best = max(scores, key=scores.get)
     if scores[best] >= 1:
         return best

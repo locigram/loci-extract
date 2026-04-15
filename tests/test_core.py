@@ -30,9 +30,20 @@ def _w2_json_with_dupes():
     return json.dumps({"documents": [rec, rec]})
 
 
+def _stub_text_strategy(monkeypatch):
+    """Pretend the fake PDF has a clean text layer so _gather_page_text
+    doesn't try to run pdffonts/OCR on empty bytes."""
+    from loci_extract import detector
+    monkeypatch.setattr(
+        detector, "get_extraction_strategy",
+        lambda p: {"strategy": "text", "encoding_broken": False, "reason": "stub"},
+    )
+
+
 def test_extract_document_dedups_w2(monkeypatch, tmp_path):
     pdf = tmp_path / "fake.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%EOF\n")
+    _stub_text_strategy(monkeypatch)
 
     monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text"})
     monkeypatch.setattr(core, "extract_text_pages", lambda p, pages: {1: "Form W-2 Wage and Tax Statement"})
@@ -48,6 +59,7 @@ def test_extract_document_dedups_w2(monkeypatch, tmp_path):
 def test_extract_document_raises_on_empty_pdf(monkeypatch, tmp_path):
     pdf = tmp_path / "empty.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%EOF\n")
+    _stub_text_strategy(monkeypatch)
     monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text"})
     monkeypatch.setattr(core, "extract_text_pages", lambda p, pages: {1: ""})
     monkeypatch.setattr(core, "make_client", lambda url, api_key="local": StubLlmClient([]))
@@ -62,6 +74,7 @@ def test_extract_batch_continues_past_failures(monkeypatch, tmp_path):
     pdf_b = tmp_path / "b.pdf"
     pdf_a.write_bytes(b"%PDF-1.4\n%EOF\n")
     pdf_b.write_bytes(b"%PDF-1.4\n%EOF\n")
+    _stub_text_strategy(monkeypatch)
 
     monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text"})
     # A yields valid text, B yields nothing
@@ -83,6 +96,7 @@ def test_extract_document_includes_doc_type_hint(monkeypatch, tmp_path):
     """If detector finds W-2 keywords, the user prompt should include the hint."""
     pdf = tmp_path / "fake.pdf"
     pdf.write_bytes(b"%PDF\n")
+    _stub_text_strategy(monkeypatch)
 
     monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text"})
     monkeypatch.setattr(core, "extract_text_pages",
