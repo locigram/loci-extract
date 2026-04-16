@@ -3,6 +3,7 @@
 Endpoints:
     GET  /healthz
     GET  /capabilities            → OCR engines, GPU, LLM reachability
+    POST /detect                  → multipart file → document type detection (no LLM)
     POST /extract                 → multipart file → Extraction JSON (or any format)
     POST /extract/batch           → multipart multiple files → per-file results
     GET  /                        → web UI (served only if [web] extra installed)
@@ -28,7 +29,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from loci_extract import __version__
-from loci_extract.core import ExtractionOptions, extract_batch, extract_document
+from loci_extract.core import ExtractionOptions, detect_document, extract_batch, extract_document
 from loci_extract.formatters import format_extraction
 from loci_extract.ocr import available_engines
 from loci_extract.schema import Extraction
@@ -150,6 +151,32 @@ def capabilities() -> dict[str, object]:
         "auth_required": bool(_API_KEY),
         "version": __version__,
     }
+
+
+@app.post("/detect", dependencies=[Depends(require_api_key)])
+def detect_endpoint(
+    file: UploadFile = File(...),
+    ocr_engine: str | None = Form(None),
+    gpu: str | None = Form(None),
+    dpi: int | None = Form(None),
+    vision: bool = Form(False),
+    vision_model: str | None = Form(None),
+) -> dict:
+    """Detect document type without calling the LLM. Fast — regex/heuristics only."""
+    opts = _options(
+        model_url=None, model_name=None, ocr_engine=ocr_engine, gpu=gpu, dpi=dpi,
+        vision=vision, vision_model=vision_model, redact=True, temperature=None,
+        max_tokens=None, retry=None,
+    )
+    with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = _save_upload(file, tmp_path)
+        try:
+            result = detect_document(pdf_path, opts)
+        except Exception as exc:
+            logger.exception("detection failed")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    return result
 
 
 @app.post("/extract", dependencies=[Depends(require_api_key)])

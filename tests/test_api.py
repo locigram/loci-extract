@@ -82,6 +82,33 @@ def test_extract_batch(client):
     assert body["results"][0]["filename"] == "a.pdf"
 
 
+def test_detect_endpoint(monkeypatch):
+    from loci_extract.api import server
+
+    fake_result = {
+        "strategy": "text",
+        "encoding_broken": False,
+        "strategy_reason": "text layer OK",
+        "document_type": "W2",
+        "document_family": "tax",
+        "confidence": 0.95,
+        "tax_year": 2025,
+        "issuer_software": "ADP",
+        "is_summary_sheet": False,
+        "estimated_record_count": 1,
+        "notes": [],
+    }
+    monkeypatch.setattr(server, "detect_document", lambda p, opts, progress_callback=None: fake_result)
+    c = TestClient(server.app)
+    files = {"file": ("test.pdf", b"%PDF-1.4\n%EOF\n", "application/pdf")}
+    r = c.post("/detect", files=files)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "W2"
+    assert body["document_family"] == "tax"
+    assert body["confidence"] == 0.95
+
+
 def test_auth_required_when_key_set(monkeypatch):
     monkeypatch.setenv("LOCI_EXTRACT_API_KEY", "secret-key")
     # Reload server module so it picks up the env var at import time.

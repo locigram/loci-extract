@@ -91,6 +91,7 @@ Additional CLI flags:
 | `--no-verify-totals` | Skip Python-side totals verification for financial documents |
 | `--family {tax,financial_simple,financial_multi,financial_txn,financial_reserve}` | Force family dispatch (overrides detector) |
 | `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential). Multi-chunk GL / long comparison reports get Nx speedup bounded by the LLM server's batch capacity. |
+| `--detect-only` | Detect document type and exit without calling the LLM (fast — regex/heuristics only) |
 | `--no-redact` | Disable SSN/TIN last-4 masking on output |
 
 ---
@@ -150,6 +151,7 @@ Endpoints:
 |--------|--------------------|--------------------------------------------------------|
 | GET    | `/healthz`         | Liveness check                                         |
 | GET    | `/capabilities`    | OCR engines available, LLM config, auth status         |
+| POST   | `/detect`          | One file → document type detection (no LLM, fast)      |
 | POST   | `/extract`         | One PDF → Extraction JSON (or csv/lacerte/txf)         |
 | POST   | `/extract/batch`   | Many PDFs → per-file results                           |
 | GET    | `/docs`            | Swagger UI                                             |

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from loci_extract import __version__
-from loci_extract.core import ExtractionOptions, extract_batch, extract_document
+from loci_extract.core import ExtractionOptions, detect_document, extract_batch, extract_document
 from loci_extract.formatters import format_extraction
 from loci_extract.schema import Document, Extraction
 
@@ -122,6 +122,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         dest="max_parallel",
         help="Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential)",
     )
+    p.add_argument(
+        "--detect-only",
+        action="store_true",
+        dest="detect_only",
+        help="Detect document type and exit without calling the LLM",
+    )
     p.add_argument("--verbose", action="store_true", help="Pipeline steps to stderr")
     p.add_argument("--version", action="version", version=f"loci-extract {__version__}")
     return p
@@ -169,6 +175,24 @@ def main(argv: list[str] | None = None) -> int:
 
     progress = _eprint if args.verbose else None
     input_path = Path(args.input)
+
+    # --detect-only: detect document type and exit without LLM
+    if args.detect_only:
+        import json as _json
+        if not input_path.is_file():
+            _eprint(f"Input file not found: {input_path}")
+            return 1
+        try:
+            result = detect_document(input_path, opts, progress_callback=progress)
+        except Exception as exc:
+            _eprint(f"ERROR: {type(exc).__name__}: {exc}")
+            return 1
+        output = _json.dumps(result, indent=2)
+        if args.output:
+            Path(args.output).write_text(output, encoding="utf-8")
+        else:
+            sys.stdout.write(output + "\n")
+        return 0
 
     try:
         if args.batch:

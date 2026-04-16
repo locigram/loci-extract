@@ -330,4 +330,38 @@ def extract_batch(
     return results
 
 
-__all__ = ["ExtractionOptions", "extract_document", "extract_batch"]
+def detect_document(
+    pdf_path: str | Path,
+    opts: ExtractionOptions,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
+    """Detect document type without calling the LLM.
+
+    Returns a dict with detection results: document_type, document_family,
+    confidence, strategy, encoding_broken, and optional tax-specific fields.
+    """
+    from dataclasses import asdict
+
+    from loci_extract.detector import detect
+
+    pdf_path = Path(pdf_path)
+
+    if pdf_path.suffix.lower() in _XLSX_EXTS:
+        from loci_extract.xlsx import extract_xlsx_text
+        if progress_callback:
+            progress_callback(f"reading XLSX via openpyxl ({pdf_path.name})")
+        raw_text = extract_xlsx_text(pdf_path)
+        if not raw_text.strip():
+            raise RuntimeError(f"No cells could be read from {pdf_path}")
+    else:
+        client = make_client(opts.model_url, api_key=opts.api_key)
+        raw_text = _gather_page_text(pdf_path, opts, client, progress_callback)
+        if not raw_text.strip():
+            raise RuntimeError(f"No text could be recovered from {pdf_path}")
+
+    result = detect(pdf_path, raw_text)
+    return asdict(result)
+
+
+__all__ = ["ExtractionOptions", "extract_document", "extract_batch", "detect_document"]

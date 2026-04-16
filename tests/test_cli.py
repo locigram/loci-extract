@@ -65,3 +65,23 @@ def test_cli_missing_file(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 1
     assert "not found" in err.lower()
+
+
+def test_cli_detect_only(monkeypatch, tmp_path, capsys):
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF\n")
+    fake_result = {
+        "document_type": "W2",
+        "document_family": "tax",
+        "confidence": 0.95,
+        "strategy": "text",
+        "encoding_broken": False,
+        "strategy_reason": "text layer OK",
+    }
+    monkeypatch.setattr(cli, "detect_document", lambda p, opts, progress_callback=None: fake_result)
+    rc = cli.main([str(pdf), "--detect-only"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    parsed = json.loads(out)
+    assert parsed["document_type"] == "W2"
+    assert parsed["document_family"] == "tax"
