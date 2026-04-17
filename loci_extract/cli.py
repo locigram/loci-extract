@@ -191,30 +191,57 @@ def main(argv: list[str] | None = None) -> int:
     progress = _eprint if args.verbose else None
     input_path = Path(args.input)
 
-    # --sanitize: extract normally, then sanitize PII in the result
+    # --sanitize: sanitize PII in the document
     if args.sanitize_mode:
         from loci_extract.llm import make_client
-        from loci_extract.sanitizer import sanitize_extraction
+        from loci_extract.sanitizer import sanitize_extraction, sanitize_pdf
 
         if not input_path.is_file():
             _eprint(f"Input file not found: {input_path}")
             return 1
+
+        is_pdf = input_path.suffix.lower() == ".pdf"
+        # Default: PDF in → PDF out; otherwise use the selected format
+        out_fmt = args.format if args.format != "json" or not is_pdf else "pdf"
+        # If user explicitly set -o with a non-pdf extension, respect the format flag
+        if args.output and not args.output.lower().endswith(".pdf"):
+            out_fmt = args.format
+
         try:
-            # Step 1: full extraction (same as normal path)
+            san_client = make_client(opts.model_url, api_key=opts.api_key) if args.sanitize_mode in ("llm", "hybrid") else None
+
+            if out_fmt == "pdf" and is_pdf:
+                # PDF-to-PDF: sanitize in-place
+                if progress:
+                    progress(f"sanitizing PDF (mode={args.sanitize_mode})...")
+                pdf_bytes, replacements = sanitize_pdf(
+                    str(input_path),
+                    mode=args.sanitize_mode,
+                    client=san_client,
+                    model_name=opts.model_name,
+                    temperature=opts.temperature,
+                    max_tokens=opts.max_tokens,
+                )
+                if progress:
+                    progress(f"replaced {len(replacements)} PII instance(s)")
+                out_path = args.output or str(input_path).replace(".pdf", ".sanitized.pdf")
+                Path(out_path).write_bytes(pdf_bytes)
+                if progress:
+                    progress(f"wrote {out_path}")
+                return 0
+
+            # Non-PDF output: extract → sanitize structured data → format
             extraction = extract_document(input_path, opts, progress_callback=progress)
             if progress:
                 progress(f"sanitizing PII (mode={args.sanitize_mode})...")
-            # Step 2: sanitize the extraction result
-            client = make_client(opts.model_url, api_key=opts.api_key) if args.sanitize_mode in ("llm", "hybrid") else None
             san_result = sanitize_extraction(
                 extraction.model_dump(),
                 mode=args.sanitize_mode,
-                client=client,
+                client=san_client,
                 model_name=opts.model_name,
                 temperature=opts.temperature,
                 max_tokens=opts.max_tokens,
             )
-            # Step 3: format the sanitized extraction in the requested format
             sanitized_extraction = Extraction.model_validate(san_result["extraction"])
             output = format_extraction(sanitized_extraction, args.format)
         except Exception as exc:

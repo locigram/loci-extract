@@ -321,12 +321,14 @@ async function startSanitize() {
   const ep = getEndpointSettings();
   for (const item of queue) {
     if (item.status !== 'pending') continue;
-    item.status = 'processing'; item.t0 = Date.now(); item.fmt = fmt; item.sanitized = true; render();
+    const isPdf = item.file.name.toLowerCase().endsWith('.pdf');
+    const sanFmt = isPdf ? 'auto' : fmt;  // auto → PDF for PDF input
+    item.status = 'processing'; item.t0 = Date.now(); item.fmt = isPdf ? 'pdf' : fmt; item.sanitized = true; render();
     try {
       const form = new FormData();
       form.append('file', item.file);
       form.append('mode', mode);
-      form.append('format', fmt);
+      form.append('format', sanFmt);
       if (ep.model_url) form.append('model_url', ep.model_url);
       if (ep.model_name) form.append('model_name', ep.model_name);
       if (ep.api_key) form.append('api_key', ep.api_key);
@@ -340,7 +342,11 @@ async function startSanitize() {
         const body = await res.text().catch(() => res.statusText);
         throw new Error(body || `HTTP ${res.status}`);
       }
-      if (fmt === 'json') {
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/pdf')) {
+        item.result = await res.blob();
+        item.fmt = 'pdf';
+      } else if (ct.includes('application/json')) {
         item.result = await res.json();
       } else {
         item.result = await res.text();
@@ -511,6 +517,18 @@ window.showResult = function(id) {
   $('#mt').textContent = q.file.name;
   const label = q.sanitized ? `${q.fmt.toUpperCase()} (Sanitized) · ${fmtDuration(q.t1 - q.t0)}` : `${q.fmt.toUpperCase()} · ${fmtDuration(q.t1 - q.t0)}`;
   $('#msub').textContent = label;
+
+  // PDF blob result — show download button, no text preview
+  if (q.result instanceof Blob) {
+    const baseName = q.file.name.replace(/\.(pdf|xlsx|xls|xlsm)$/i, '');
+    $('#mc').innerHTML = '<p style="color:var(--text-dim);font-size:13px;margin:20px 0">Sanitized PDF ready for download.</p>';
+    $('#mdl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(q.result); a.download = baseName + '.sanitized.pdf'; a.click(); URL.revokeObjectURL(a.href); };
+    $('#mcp').style.display = 'none';
+    $('#ov').classList.add('on');
+    return;
+  }
+  $('#mcp').style.display = '';
+
   const text = q.fmt === 'json' ? JSON.stringify(q.result, null, 2) : q.result;
 
   // Financial Summary block: shown when result is JSON and first document is financial

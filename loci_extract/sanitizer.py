@@ -448,7 +448,116 @@ def sanitize_extraction(extraction_dict: dict, mode: str = "regex",
     raise ValueError(f"Unknown sanitize mode: {mode!r}")
 
 
+# ---------------------------------------------------------------------------
+# PDF sanitization — find-and-replace PII in the original PDF
+# ---------------------------------------------------------------------------
+
+
+def sanitize_pdf(
+    pdf_path: str,
+    mode: str = "regex",
+    client=None,
+    model_name: str = "",
+    temperature: float = 0.0,
+    max_tokens: int = 8192,
+) -> tuple[bytes, list[dict]]:
+    """Sanitize PII in a PDF file. Returns ``(pdf_bytes, replacements)``.
+
+    Uses PyMuPDF to search for each PII string in the PDF, redact it
+    (white rectangle), and overlay the synthetic replacement text at
+    the same position. The output is a new PDF with identical layout
+    but synthetic PII.
+
+    For ``regex`` mode: builds a replacement map from regex patterns,
+    then applies to the PDF.
+
+    For ``llm``/``hybrid`` mode: extracts full text, runs through the
+    LLM sanitizer to build a name replacement map, then applies all
+    replacements (regex + LLM-discovered names) to the PDF.
+    """
+    import pymupdf
+
+    doc = pymupdf.open(pdf_path)
+
+    # Step 1: extract full text to build the replacement map
+    full_text = "\n".join(page.get_text() for page in doc)
+
+    # Step 2: build replacement map
+    replacements: list[dict] = []
+    seen: dict[str, str] = {}
+
+    if mode in ("regex", "hybrid"):
+        # Run regex sanitization on the full text to discover PII → synthetic mappings
+        regex_result = sanitize_regex(full_text)
+        replacements.extend(regex_result["replacements"])
+        for r in regex_result["replacements"]:
+            seen[r["original"]] = r["replacement"]
+
+    if mode in ("llm", "hybrid"):
+        if client is None:
+            raise ValueError("LLM client required for mode='llm' or 'hybrid'")
+        # For LLM mode, we need the model to identify names and other PII
+        # Send the (possibly regex-sanitized) text to discover name mappings
+        text_for_llm = regex_result["sanitized"] if mode == "hybrid" else full_text
+        llm_prompt = (
+            "List all person names in this document, one per line. "
+            "Format: ORIGINAL_NAME|REPLACEMENT_NAME\n"
+            "Use realistic replacement names. Only output the pairs, nothing else.\n\n"
+            + text_for_llm
+        )
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You extract person names from documents and generate realistic replacements."},
+                    {"role": "user", "content": llm_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            pairs_text = response.choices[0].message.content or ""
+            for line in pairs_text.strip().split("\n"):
+                if "|" not in line:
+                    continue
+                parts = line.split("|", 1)
+                original = parts[0].strip()
+                replacement = parts[1].strip()
+                if original and replacement and original not in seen:
+                    seen[original] = replacement
+                    replacements.append({"original": original, "replacement": replacement, "kind": "name"})
+        except Exception:
+            pass  # LLM failure is non-fatal — regex replacements still apply
+
+    if mode == "llm" and not any(r["kind"] != "name" for r in replacements):
+        # Pure LLM mode — still need regex for SSNs/phones
+        regex_result = sanitize_regex(full_text)
+        for r in regex_result["replacements"]:
+            if r["original"] not in seen:
+                seen[r["original"]] = r["replacement"]
+                replacements.append(r)
+
+    # Step 3: apply replacements to each PDF page
+    # Sort by length descending so longer strings are replaced first
+    # (prevents partial matches — "Jane Smith" before "Jane")
+    sorted_replacements = sorted(seen.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for page in doc:
+        for original, replacement in sorted_replacements:
+            instances = page.search_for(original)
+            for rect in instances:
+                # Add redaction annotation (white fill)
+                page.add_redact_annot(rect, text=replacement, fontsize=0, fill=(1, 1, 1))
+        # Apply all redactions on this page at once
+        page.apply_redactions()
+
+    # Step 4: save to bytes
+    pdf_bytes = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+
+    return pdf_bytes, replacements
+
+
 __all__ = [
     "sanitize", "sanitize_regex", "sanitize_llm", "sanitize_hybrid",
-    "sanitize_extraction",
+    "sanitize_extraction", "sanitize_pdf",
 ]

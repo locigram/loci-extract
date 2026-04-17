@@ -208,7 +208,7 @@ def format_endpoint(
 def sanitize_endpoint(
     file: UploadFile = File(...),
     mode: str = Form("regex"),
-    format: str = Form("json"),
+    format: str = Form("auto"),
     model_url: str | None = Form(None),
     model_name: str | None = Form(None),
     api_key: str | None = Form(None),
@@ -224,10 +224,13 @@ def sanitize_endpoint(
 ) -> Response:
     """Extract a document, then replace PII with realistic synthetic data.
 
-    Returns the sanitized extraction in the requested format (JSON/CSV/etc).
+    When ``format=auto`` (default) or ``format=pdf``, and the input is a PDF,
+    returns a sanitized PDF with PII replaced in-place. Otherwise returns
+    the sanitized extraction in the requested format (JSON/CSV/etc).
+
     Modes: ``regex`` (fast, no LLM for sanitization), ``llm`` (context-aware),
     ``hybrid`` (regex then LLM for names). EINs are preserved."""
-    from loci_extract.sanitizer import sanitize_extraction
+    from loci_extract.sanitizer import sanitize_extraction, sanitize_pdf
 
     opts = _options(
         model_url, model_name, ocr_engine, gpu, dpi, vision, vision_model,
@@ -236,10 +239,33 @@ def sanitize_endpoint(
     with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
         tmp_path = Path(tmp)
         pdf_path = _save_upload(file, tmp_path)
+        is_pdf = pdf_path.suffix.lower() == ".pdf"
+        resolved_format = format if format != "auto" else ("pdf" if is_pdf else "json")
+
         try:
-            # Step 1: full extraction
+            if resolved_format == "pdf" and is_pdf:
+                # PDF-to-PDF: sanitize in-place, return a new PDF
+                san_client = None
+                if mode in ("llm", "hybrid"):
+                    from loci_extract.llm import make_client
+                    san_client = make_client(opts.model_url, api_key=opts.api_key)
+                pdf_bytes, _replacements = sanitize_pdf(
+                    str(pdf_path),
+                    mode=mode,
+                    client=san_client,
+                    model_name=opts.model_name,
+                    temperature=opts.temperature if opts.temperature is not None else 0.0,
+                    max_tokens=opts.max_tokens or 8192,
+                )
+                filename = pdf_path.stem + ".sanitized.pdf"
+                return Response(
+                    content=pdf_bytes,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+
+            # Non-PDF or explicit format: extract → sanitize → format
             extraction = extract_document(pdf_path, opts)
-            # Step 2: sanitize the extraction result
             san_client = None
             if mode in ("llm", "hybrid"):
                 from loci_extract.llm import make_client
@@ -252,12 +278,11 @@ def sanitize_endpoint(
                 temperature=opts.temperature if opts.temperature is not None else 0.0,
                 max_tokens=opts.max_tokens or 8192,
             )
-            # Step 3: format the sanitized extraction
             sanitized_extraction = Extraction.model_validate(san_result["extraction"])
         except Exception as exc:
             logger.exception("Sanitization failed")
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
-    return _format_response(sanitized_extraction, format)
+    return _format_response(sanitized_extraction, resolved_format)
 
 
 @app.post("/ocr", dependencies=[Depends(require_api_key)])
