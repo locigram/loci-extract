@@ -19,8 +19,8 @@ from loci_extract.schema import Document, Extraction
 
 # Defaults used when env vars are unset. These point at the in-house
 # surugpu llama-server that typically hosts Qwen3-VL 32B for the team.
-_DEFAULT_MODEL_URL = os.getenv("LOCI_EXTRACT_MODEL_URL", "http://10.10.100.20:9020/v1")
-_DEFAULT_MODEL_NAME = os.getenv("LOCI_EXTRACT_MODEL_NAME", "qwen3-vl-32b")
+_DEFAULT_MODEL_URL = os.getenv("LOCI_EXTRACT_MODEL_URL", "http://10.10.100.80:30911/v1")
+_DEFAULT_MODEL_NAME = os.getenv("LOCI_EXTRACT_MODEL_NAME", "mlx-community/Qwen3.6-35B-A3B-8bit")
 _DEFAULT_VISION_MODEL = os.getenv("LOCI_EXTRACT_VISION_MODEL", _DEFAULT_MODEL_NAME)
 
 

@@ -100,9 +100,9 @@
       <div class="field">
         <label for="ep">LLM endpoint</label>
         <select id="ep" onchange="onEndpointChange()">
-          <option value="" data-url="" data-name="" data-key="">Server default</option>
+          <option value="" data-url="" data-name="" data-key="">Server default (10.10.100.80 Qwen3.6 35B-A3B)</option>
+          <option value="suru80" data-url="http://10.10.100.80:30911/v1" data-name="mlx-community/Qwen3.6-35B-A3B-8bit" data-key="0822e157af2613bc6c0a6d82d5b435735b9f3a9942c9a097">10.10.100.80 — Qwen3.6 35B-A3B</option>
           <option value="surugpu" data-url="http://10.10.100.20:9020/v1" data-name="qwen3-vl-32b" data-key="">surugpu — Qwen3-VL 32B (local, no auth)</option>
-          <option value="suru80" data-url="http://10.10.100.80:30911/v1" data-name="mlx-community/Qwen3.6-35B-A3B-8bit" data-key="0822e157af2613bc6c0a6d82d5b435735b9f3a9942c9a097">10.10.100.80 — Qwen3.6 35B-A3B (auth)</option>
           <option value="custom">Custom...</option>
         </select>
         <div class="fh">Pick a preconfigured LLM or enter a custom OpenAI-compatible endpoint.</div>
