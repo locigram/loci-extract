@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 
 from loci_extract.prompts import DOCUMENT_FAMILY_MAP, DocumentFamily
 from loci_extract.schema import Extraction
@@ -389,34 +388,188 @@ def _csv_aging(extraction: Extraction) -> str:
 # ===========================================================================
 
 
-_TAX_HEADER_COLUMNS = [
+# ---------------------------------------------------------------------------
+# W-2 flat columns — mirrors the IRS W-2 form so a human can verify each box
+# ---------------------------------------------------------------------------
+
+# Up to 4 Box 12 entries (a–d), 2 state rows, 2 local rows — covers
+# virtually every real W-2. Extra entries go into overflow columns.
+_MAX_BOX12 = 4
+_MAX_BOX14 = 4
+_MAX_STATES = 2
+_MAX_LOCALS = 2
+
+_W2_COLUMNS: list[str] = [
     "document_type",
     "tax_year",
-    "is_summary_sheet",
     "is_corrected",
-    "is_void",
-    "party_employer_or_payer_name",
-    "party_employer_or_payer_tin",
-    "party_employer_or_payer_address",
-    "party_recipient_name",
-    "party_recipient_tin_last4",
-    "party_recipient_address",
-    "w2_box1_wages",
-    "w2_box2_federal_withheld",
-    "w2_box3_ss_wages",
-    "w2_box4_ss_withheld",
-    "w2_box5_medicare_wages",
-    "w2_box6_medicare_withheld",
-    "primary_amount_field",
-    "primary_amount",
-    "box12_json",
-    "box14_json",
-    "state_json",
-    "local_json",
-    "transactions_json",
-    "notes_json",
+    # Employer (left side of W-2)
+    "employer_name",
+    "employer_ein",
+    "employer_address",
+    # Employee (right side of W-2)
+    "employee_name",
+    "employee_ssn_last4",
+    "employee_address",
+    # Federal boxes 1–11
+    "box1_wages",
+    "box2_federal_withheld",
+    "box3_ss_wages",
+    "box4_ss_withheld",
+    "box5_medicare_wages",
+    "box6_medicare_withheld",
+    "box7_ss_tips",
+    "box8_allocated_tips",
+    "box10_dependent_care",
+    "box11_nonqualified_plans",
+    # Box 12a–d (code + amount per slot)
+    *[f"box12{chr(97+i)}_code" for i in range(_MAX_BOX12)],
+    *[f"box12{chr(97+i)}_amount" for i in range(_MAX_BOX12)],
+    # Box 13 checkboxes
+    "box13_statutory_employee",
+    "box13_retirement_plan",
+    "box13_third_party_sick_pay",
+    # Box 14 other (label + amount per slot)
+    *[f"box14_{i+1}_label" for i in range(_MAX_BOX14)],
+    *[f"box14_{i+1}_amount" for i in range(_MAX_BOX14)],
+    # State (up to 2 rows — boxes 15–17)
+    *[f"state{i+1}_abbr" for i in range(_MAX_STATES)],
+    *[f"state{i+1}_id" for i in range(_MAX_STATES)],
+    *[f"state{i+1}_wages" for i in range(_MAX_STATES)],
+    *[f"state{i+1}_withheld" for i in range(_MAX_STATES)],
+    # Local (up to 2 rows — boxes 18–19)
+    *[f"local{i+1}_name" for i in range(_MAX_LOCALS)],
+    *[f"local{i+1}_wages" for i in range(_MAX_LOCALS)],
+    *[f"local{i+1}_withheld" for i in range(_MAX_LOCALS)],
+    # Metadata
+    "notes",
 ]
 
+
+def _row_for_w2(doc_dict: dict) -> dict:
+    """Flatten a W-2 doc into one row with every IRS box as its own column."""
+    data = doc_dict.get("data", {}) or {}
+    meta = doc_dict.get("metadata", {}) or {}
+    employer = data.get("employer", {}) or {}
+    employee = data.get("employee", {}) or {}
+    federal = data.get("federal", {}) or {}
+
+    row: dict[str, object] = {
+        "document_type": "W2",
+        "tax_year": doc_dict.get("tax_year", ""),
+        "is_corrected": meta.get("is_corrected", False),
+        "employer_name": employer.get("name", ""),
+        "employer_ein": employer.get("ein", ""),
+        "employer_address": employer.get("address", ""),
+        "employee_name": employee.get("name", ""),
+        "employee_ssn_last4": employee.get("ssn_last4", ""),
+        "employee_address": employee.get("address", ""),
+        "box1_wages": _v(federal.get("box1_wages")),
+        "box2_federal_withheld": _v(federal.get("box2_federal_withheld")),
+        "box3_ss_wages": _v(federal.get("box3_ss_wages")),
+        "box4_ss_withheld": _v(federal.get("box4_ss_withheld")),
+        "box5_medicare_wages": _v(federal.get("box5_medicare_wages")),
+        "box6_medicare_withheld": _v(federal.get("box6_medicare_withheld")),
+        "box7_ss_tips": _v(federal.get("box7_ss_tips")),
+        "box8_allocated_tips": _v(federal.get("box8_allocated_tips")),
+        "box10_dependent_care": _v(federal.get("box10_dependent_care")),
+        "box11_nonqualified_plans": _v(federal.get("box11_nonqualified_plans")),
+    }
+
+    # Box 12a–d
+    box12 = data.get("box12", []) or []
+    for i in range(_MAX_BOX12):
+        letter = chr(97 + i)
+        if i < len(box12) and isinstance(box12[i], dict):
+            row[f"box12{letter}_code"] = box12[i].get("code", "")
+            row[f"box12{letter}_amount"] = _v(box12[i].get("amount"))
+        else:
+            row[f"box12{letter}_code"] = ""
+            row[f"box12{letter}_amount"] = ""
+
+    # Box 13
+    box13 = data.get("box13", {}) or {}
+    row["box13_statutory_employee"] = _yn(box13.get("statutory_employee"))
+    row["box13_retirement_plan"] = _yn(box13.get("retirement_plan"))
+    row["box13_third_party_sick_pay"] = _yn(box13.get("third_party_sick_pay"))
+
+    # Box 14 other
+    box14 = data.get("box14_other", []) or []
+    for i in range(_MAX_BOX14):
+        if i < len(box14) and isinstance(box14[i], dict):
+            row[f"box14_{i+1}_label"] = box14[i].get("label", "")
+            row[f"box14_{i+1}_amount"] = _v(box14[i].get("amount"))
+        else:
+            row[f"box14_{i+1}_label"] = ""
+            row[f"box14_{i+1}_amount"] = ""
+
+    # State (boxes 15–17)
+    states = data.get("state", []) or []
+    for i in range(_MAX_STATES):
+        if i < len(states) and isinstance(states[i], dict):
+            row[f"state{i+1}_abbr"] = states[i].get("state_abbr", "")
+            row[f"state{i+1}_id"] = states[i].get("state_id", "") or ""
+            row[f"state{i+1}_wages"] = _v(states[i].get("box16_state_wages"))
+            row[f"state{i+1}_withheld"] = _v(states[i].get("box17_state_withheld"))
+        else:
+            row[f"state{i+1}_abbr"] = ""
+            row[f"state{i+1}_id"] = ""
+            row[f"state{i+1}_wages"] = ""
+            row[f"state{i+1}_withheld"] = ""
+
+    # Local (boxes 18–19)
+    locals_ = data.get("local", []) or []
+    for i in range(_MAX_LOCALS):
+        if i < len(locals_) and isinstance(locals_[i], dict):
+            row[f"local{i+1}_name"] = locals_[i].get("locality_name", "")
+            row[f"local{i+1}_wages"] = _v(locals_[i].get("box18_local_wages"))
+            row[f"local{i+1}_withheld"] = _v(locals_[i].get("box19_local_withheld"))
+        else:
+            row[f"local{i+1}_name"] = ""
+            row[f"local{i+1}_wages"] = ""
+            row[f"local{i+1}_withheld"] = ""
+
+    notes = meta.get("notes", []) or []
+    row["notes"] = "; ".join(notes) if notes else ""
+
+    return row
+
+
+def _v(val) -> str:
+    """Format a numeric value — show 0.0 as '0.00', None/absent as ''."""
+    if val is None:
+        return ""
+    try:
+        return f"{float(val):.2f}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def _yn(val) -> str:
+    """Boolean to Y/N for checkboxes — '' when None/absent."""
+    if val is None:
+        return ""
+    return "Y" if val else "N"
+
+
+# ---------------------------------------------------------------------------
+# Non-W2 tax fallback — generic party + primary amount for 1099s / K-1s etc.
+# ---------------------------------------------------------------------------
+
+_GENERIC_TAX_COLUMNS = [
+    "document_type",
+    "tax_year",
+    "is_corrected",
+    "payer_or_employer_name",
+    "payer_or_employer_tin",
+    "payer_or_employer_address",
+    "recipient_name",
+    "recipient_tin_last4",
+    "recipient_address",
+    "primary_amount_field",
+    "primary_amount",
+    "notes",
+]
 
 _PRIMARY_PARTY_MAP: dict[str, tuple[str, str]] = {
     "W2": ("employer", "employee"),
@@ -477,54 +630,69 @@ def _dig(d: dict, path: str):
     return cur
 
 
-def _row_for_tax_doc(doc_dict: dict) -> dict:
+def _row_for_generic_tax(doc_dict: dict) -> dict:
     doc_type = doc_dict.get("document_type", "")
     meta = doc_dict.get("metadata", {}) or {}
     data = doc_dict.get("data", {}) or {}
     party_a_key, party_b_key = _PRIMARY_PARTY_MAP.get(doc_type, ("", ""))
     party_a = data.get(party_a_key, {}) if party_a_key else {}
     party_b = data.get(party_b_key, {}) if party_b_key else {}
+    if not isinstance(party_a, dict):
+        party_a = {}
+    if not isinstance(party_b, dict):
+        party_b = {}
 
     primary_path, primary_label = _PRIMARY_AMOUNT_MAP.get(doc_type, ("", ""))
     primary_amount = _dig(data, primary_path) if primary_path else None
+    notes = meta.get("notes", []) or []
 
     return {
         "document_type": doc_type,
         "tax_year": doc_dict.get("tax_year", ""),
-        "is_summary_sheet": meta.get("is_summary_sheet", False),
         "is_corrected": meta.get("is_corrected", False),
-        "is_void": meta.get("is_void", False),
-        "party_employer_or_payer_name": (party_a or {}).get("name", "") if isinstance(party_a, dict) else "",
-        "party_employer_or_payer_tin": (party_a or {}).get("ein") or (party_a or {}).get("tin") or ""
-        if isinstance(party_a, dict) else "",
-        "party_employer_or_payer_address": (party_a or {}).get("address", "") if isinstance(party_a, dict) else "",
-        "party_recipient_name": (party_b or {}).get("name", "") if isinstance(party_b, dict) else "",
-        "party_recipient_tin_last4": (party_b or {}).get("ssn_last4") or (party_b or {}).get("tin_last4") or ""
-        if isinstance(party_b, dict) else "",
-        "party_recipient_address": (party_b or {}).get("address", "") if isinstance(party_b, dict) else "",
-        "w2_box1_wages": _dig(data, "federal.box1_wages") or "",
-        "w2_box2_federal_withheld": _dig(data, "federal.box2_federal_withheld") or "",
-        "w2_box3_ss_wages": _dig(data, "federal.box3_ss_wages") or "",
-        "w2_box4_ss_withheld": _dig(data, "federal.box4_ss_withheld") or "",
-        "w2_box5_medicare_wages": _dig(data, "federal.box5_medicare_wages") or "",
-        "w2_box6_medicare_withheld": _dig(data, "federal.box6_medicare_withheld") or "",
+        "payer_or_employer_name": party_a.get("name", ""),
+        "payer_or_employer_tin": party_a.get("ein") or party_a.get("tin") or "",
+        "payer_or_employer_address": party_a.get("address", ""),
+        "recipient_name": party_b.get("name", ""),
+        "recipient_tin_last4": party_b.get("ssn_last4") or party_b.get("tin_last4") or "",
+        "recipient_address": party_b.get("address", ""),
         "primary_amount_field": primary_label,
-        "primary_amount": primary_amount if primary_amount is not None else "",
-        "box12_json": json.dumps(data.get("box12", [])),
-        "box14_json": json.dumps(data.get("box14_other", [])),
-        "state_json": json.dumps(data.get("state", [])),
-        "local_json": json.dumps(data.get("local", [])),
-        "transactions_json": json.dumps(data.get("transactions", [])),
-        "notes_json": json.dumps(meta.get("notes", [])),
+        "primary_amount": _v(primary_amount),
+        "notes": "; ".join(notes) if notes else "",
     }
 
 
 def _csv_tax_rows(extraction: Extraction) -> str:
+    """Route to the W-2 flat layout or generic tax layout depending on doc types."""
+    w2_docs = [d for d in extraction.documents if d.document_type == "W2"]
+    other_docs = [d for d in extraction.documents if d.document_type != "W2"]
+
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=_TAX_HEADER_COLUMNS, extrasaction="ignore", lineterminator="\n")
-    writer.writeheader()
-    for doc in extraction.documents:
-        writer.writerow(_row_for_tax_doc(doc.model_dump()))
+
+    if w2_docs and not other_docs:
+        # Pure W-2 batch — use the flat W-2 columns
+        writer = csv.DictWriter(buf, fieldnames=_W2_COLUMNS, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        for doc in w2_docs:
+            writer.writerow(_row_for_w2(doc.model_dump()))
+    elif not w2_docs:
+        # Non-W2 tax docs
+        writer = csv.DictWriter(buf, fieldnames=_GENERIC_TAX_COLUMNS, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        for doc in other_docs:
+            writer.writerow(_row_for_generic_tax(doc.model_dump()))
+    else:
+        # Mixed batch — W-2s get their own section, then generic for the rest
+        writer = csv.DictWriter(buf, fieldnames=_W2_COLUMNS, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        for doc in w2_docs:
+            writer.writerow(_row_for_w2(doc.model_dump()))
+        buf.write("\n")  # blank line separator
+        writer2 = csv.DictWriter(buf, fieldnames=_GENERIC_TAX_COLUMNS, extrasaction="ignore", lineterminator="\n")
+        writer2.writeheader()
+        for doc in other_docs:
+            writer2.writerow(_row_for_generic_tax(doc.model_dump()))
+
     return buf.getvalue()
 
 

@@ -45,9 +45,22 @@ def test_csv_formatter_shape():
     out = format_extraction(ext, "csv")
     lines = out.strip().split("\n")
     assert lines[0].startswith("document_type,")
-    # W-2 primary amount should be Box 1 wages label
-    assert "Box 1 wages" in lines[1]
+    # Flat W-2 columns — no JSON blobs
+    assert "box1_wages" in lines[0]
+    assert "box12a_code" in lines[0]
+    assert "state1_abbr" in lines[0]
+    assert "_json" not in lines[0]
+    # Data row
     assert "Jane Smith" in lines[1]
+    assert "75000.00" in lines[1]
+    # Box 12a
+    assert "AA" in lines[1]
+    assert "3833.36" in lines[1]
+    # Box 13 retirement plan
+    assert ",Y," in lines[1] or lines[1].endswith(",Y")
+    # State
+    assert "CA" in lines[1]
+    assert "3200.00" in lines[1]
 
 
 def test_lacerte_w2_output():
