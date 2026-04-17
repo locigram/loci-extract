@@ -165,6 +165,7 @@ Endpoints:
 | POST   | `/detect`          | One file → document type detection (no LLM, fast)      |
 | POST   | `/extract`         | One PDF → Extraction JSON (or csv/lacerte/txf)         |
 | POST   | `/extract/batch`   | Many PDFs → per-file results                           |
+| POST   | `/format`          | Re-format Extraction JSON → CSV/Lacerte/TXF (no LLM)  |
 | GET    | `/docs`            | Swagger UI                                             |
 | GET    | `/`                | Drop-zone web UI                                       |
 

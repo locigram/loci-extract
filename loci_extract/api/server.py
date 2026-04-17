@@ -6,6 +6,7 @@ Endpoints:
     POST /detect                  → multipart file → document type detection (no LLM)
     POST /extract                 → multipart file → Extraction JSON (or any format)
     POST /extract/batch           → multipart multiple files → per-file results
+    POST /format                  → re-format Extraction JSON → CSV/Lacerte/TXF (no LLM)
     GET  /                        → web UI (served only if [web] extra installed)
 
 Auth: if ``LOCI_EXTRACT_API_KEY`` is set, every non-/healthz endpoint
