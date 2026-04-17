@@ -141,9 +141,21 @@
         <label><input type="checkbox" id="redact" checked> Redact SSN/TIN</label>
         <div class="fh">Mask to last 4 digits on output (recommended).</div>
       </div>
+      <div class="field field-full">
+        <label for="sanMode">PII Sanitizer (for training data)</label>
+        <select id="sanMode" onchange="onSanitizeModeChange()">
+          <option value="">Off — extract normally</option>
+          <option value="regex">Regex only (fast, no LLM — SSNs, phones, addresses)</option>
+          <option value="llm">LLM-assisted (catches names + context-aware)</option>
+          <option value="hybrid">Hybrid (regex first, then LLM for names)</option>
+        </select>
+        <div class="fh">Replace PII with realistic synthetic data for LLM training. EINs preserved.
+          When enabled, files are sanitized instead of extracted.</div>
+      </div>
     </div>
     <div class="queue-actions" style="margin-top:12px">
       <button class="primary" id="start">Start extraction</button>
+      <button class="primary" id="startSanitize" style="display:none">Sanitize files</button>
       <button class="sm" id="exportCsv" style="display:none">Export all as CSV</button>
       <button class="sm" id="clearDone">Clear done</button>
       <button class="sm" id="clearAll">Clear all</button>
@@ -211,8 +223,15 @@ function addFiles(files) {
 }
 
 $('#start').addEventListener('click', start);
+$('#startSanitize').addEventListener('click', startSanitize);
 $('#clearDone').addEventListener('click', () => { queue = queue.filter(q => q.status !== 'done' && q.status !== 'error'); render(); });
 $('#clearAll').addEventListener('click', () => { if (!processing) { queue = []; render(); } });
+
+function onSanitizeModeChange() {
+  const mode = $('#sanMode').value;
+  $('#start').style.display = mode ? 'none' : '';
+  $('#startSanitize').style.display = mode ? '' : 'none';
+}
 
 function fmtDuration(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
 
@@ -283,6 +302,42 @@ async function start() {
       } else {
         item.result = await res.text();
       }
+      item.status = 'done';
+    } catch(e) {
+      item.error = (e && e.message) || String(e);
+      item.status = 'error';
+    }
+    item.t1 = Date.now();
+    render();
+  }
+  processing = false; render();
+}
+
+async function startSanitize() {
+  if (processing) return;
+  processing = true;
+  const mode = $('#sanMode').value || 'regex';
+  const ep = getEndpointSettings();
+  for (const item of queue) {
+    if (item.status !== 'pending') continue;
+    item.status = 'processing'; item.t0 = Date.now(); item.fmt = 'sanitize'; render();
+    try {
+      const form = new FormData();
+      form.append('file', item.file);
+      form.append('mode', mode);
+      if (ep.model_url) form.append('model_url', ep.model_url);
+      if (ep.model_name) form.append('model_name', ep.model_name);
+      if (ep.api_key) form.append('api_key', ep.api_key);
+      form.append('dpi', $('#dpi').value);
+      if ($('#vision').checked) form.append('vision', 'true');
+      const ocr = $('#ocr').value;
+      if (ocr) form.append('ocr_engine', ocr);
+      const res = await fetch('/sanitize', { method: 'POST', body: form });
+      if (!res.ok) {
+        const body = await res.text().catch(() => res.statusText);
+        throw new Error(body || `HTTP ${res.status}`);
+      }
+      item.result = await res.json();
       item.status = 'done';
     } catch(e) {
       item.error = (e && e.message) || String(e);
@@ -447,6 +502,30 @@ window.showResult = function(id) {
   const q = queue.find(x => x.id === id);
   if (!q || !q.result) return;
   $('#mt').textContent = q.file.name;
+
+  // Sanitize result
+  if (q.fmt === 'sanitize') {
+    const r = q.result;
+    const mode = (r.mode || 'regex').toUpperCase();
+    const reps = r.replacements || r.regex_replacements || [];
+    $('#msub').textContent = `SANITIZE (${mode}) · ${fmtDuration(q.t1 - q.t0)} · ${reps.length} replacement(s)`;
+    let statsHtml = '';
+    if (reps.length) {
+      statsHtml = '<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--accent)">Replacements (' + reps.length + ')</summary>'
+        + '<table style="font-size:11px;margin-top:6px;border-collapse:collapse;width:100%">'
+        + '<tr style="text-align:left;border-bottom:1px solid var(--border)"><th style="padding:3px 8px">Kind</th><th style="padding:3px 8px">Original</th><th style="padding:3px 8px">Replacement</th></tr>'
+        + reps.map(r => `<tr><td style="padding:2px 8px;color:var(--text-dim)">${escapeHtml(r.kind)}</td><td style="padding:2px 8px;color:var(--error)">${escapeHtml(r.original)}</td><td style="padding:2px 8px;color:var(--success)">${escapeHtml(r.replacement)}</td></tr>`).join('')
+        + '</table></details>';
+    }
+    const text = r.sanitized || '';
+    $('#mc').innerHTML = statsHtml + `<div class="jv">${escapeHtml(text)}</div>`;
+    const baseName = q.file.name.replace(/\.(pdf|xlsx|xls|xlsm)$/i, '');
+    $('#mdl').onclick = () => download(text, baseName + '.sanitized.txt', 'text/plain');
+    $('#mcp').onclick = () => { navigator.clipboard.writeText(text); const b = $('#mcp'); b.textContent = 'Copied!'; setTimeout(() => b.textContent = 'Copy', 1500); };
+    $('#ov').classList.add('on');
+    return;
+  }
+
   $('#msub').textContent = `${q.fmt.toUpperCase()} · ${fmtDuration(q.t1 - q.t0)}`;
   const text = q.fmt === 'json' ? JSON.stringify(q.result, null, 2) : q.result;
 
