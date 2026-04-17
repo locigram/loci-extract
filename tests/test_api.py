@@ -82,6 +82,22 @@ def test_extract_batch(client):
     assert body["results"][0]["filename"] == "a.pdf"
 
 
+def test_format_endpoint(client):
+    body = _stub_extraction_dict()
+    r = client.post("/format?format=csv", json=body)
+    assert r.status_code == 200, r.text
+    assert "text/csv" in r.headers["content-type"]
+    assert "box1_wages" in r.text  # flat W-2 columns
+    assert "Jane" in r.text
+
+
+def test_format_endpoint_json(client):
+    body = _stub_extraction_dict()
+    r = client.post("/format?format=json", json=body)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+
+
 def test_detect_endpoint(monkeypatch):
     from loci_extract.api import server
 

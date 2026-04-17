@@ -144,6 +144,7 @@
     </div>
     <div class="queue-actions" style="margin-top:12px">
       <button class="primary" id="start">Start extraction</button>
+      <button class="sm" id="exportCsv" style="display:none">Export all as CSV</button>
       <button class="sm" id="clearDone">Clear done</button>
       <button class="sm" id="clearAll">Clear all</button>
     </div>
@@ -311,6 +312,39 @@ function render() {
       <div class="meta"><div class="name">${escapeHtml(q.file.name)}</div><div class="detail">${detail}</div></div>
     </div>`;
   }).join('');
+  // Show "Export all as CSV" when 2+ items have JSON results
+  const doneWithJson = queue.filter(q => q.status === 'done' && q.fmt === 'json' && q.result && q.result.documents);
+  $('#exportCsv').style.display = doneWithJson.length >= 1 ? '' : 'none';
+}
+
+$('#exportCsv').addEventListener('click', exportAllCsv);
+
+async function exportAllCsv() {
+  const doneItems = queue.filter(q => q.status === 'done' && q.fmt === 'json' && q.result && q.result.documents);
+  if (!doneItems.length) return;
+  const merged = { documents: [] };
+  for (const item of doneItems) {
+    merged.documents.push(...item.result.documents);
+  }
+  try {
+    const res = await fetch('/format?format=csv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(merged),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'loci-extract-batch.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    alert('Export failed: ' + (e.message || e));
+  }
 }
 
 function escapeHtml(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }

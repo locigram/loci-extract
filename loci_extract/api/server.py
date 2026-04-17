@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 try:
-    from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+    from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
     from fastapi.responses import HTMLResponse, PlainTextResponse, Response
     from fastapi.staticfiles import StaticFiles
 except ImportError as exc:  # pragma: no cover
@@ -180,6 +180,22 @@ def detect_endpoint(
             logger.exception("detection failed")
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     return result
+
+
+@app.post("/format", dependencies=[Depends(require_api_key)])
+def format_endpoint(
+    body: dict,
+    format: str = Query("csv"),
+) -> Response:
+    """Re-format an already-extracted Extraction JSON as CSV/Lacerte/TXF.
+
+    Accepts the same ``{documents: [...]}`` shape returned by ``/extract``.
+    No LLM call — pure formatting."""
+    try:
+        extraction = Extraction.model_validate(body)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid Extraction body: {exc}") from exc
+    return _format_response(extraction, format)
 
 
 @app.post("/extract", dependencies=[Depends(require_api_key)])
