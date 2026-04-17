@@ -60,21 +60,6 @@ loci-extract 25-W2.pdf --format lacerte -o import.txt
 
 # TXF v42 for TurboTax / TaxAct / UltraTax
 loci-extract 25-W2.pdf --format txf -o import.txf
-
-# Vision mode: render ALL pages as images and send to a VLM
-# (ignores text layer — best for scans and image-only PDFs)
-loci-extract bad_scan.pdf --vision --vision-model qwen3-vl-32b \
-  --model http://localhost:9020/v1
-
-# Multi-section PDFs are auto-split (e.g. BS + P&L + GL in one file)
-# Each section is detected and extracted independently
-loci-extract combined-financials.pdf --verbose
-
-# Force a specific document family (override detector)
-loci-extract statement.pdf --family financial_simple
-
-# Skip Python-side totals verification
-loci-extract statement.pdf --no-verify-totals
 ```
 
 Env-var defaults let you omit `--model` and `--model-name`:
@@ -98,19 +83,135 @@ loci-extract 25-W2.pdf --model http://10.10.100.80:30911/v1 \
   --api-key your-bearer-token
 ```
 
-Additional CLI flags:
+### CLI tools (every feature with its CLI and API equivalent)
+
+#### Extract (full pipeline: OCR/vision → LLM → structured output)
+
+```bash
+# CLI
+loci-extract w2.pdf --format json                  # → JSON stdout
+loci-extract w2.pdf --format csv -o out.csv         # → flat W-2 CSV
+loci-extract --batch ~/pdfs --format csv -o all.csv # → batch CSV
+
+# API
+curl -F "file=@w2.pdf" -F "format=json" http://localhost:8080/extract
+curl -F "file=@w2.pdf" -F "format=csv" http://localhost:8080/extract -o out.csv
+```
+
+#### Detect (document type — no LLM, fast)
+
+```bash
+# CLI
+loci-extract w2.pdf --detect-only
+# → {"document_type": "W2", "document_family": "tax", "confidence": 0.95, ...}
+
+# API
+curl -F "file=@w2.pdf" http://localhost:8080/detect
+```
+
+#### Vision mode (render ALL pages as images → VLM)
+
+```bash
+# CLI — ignores text layer, sends every page through VLM at configured DPI
+loci-extract scan.pdf --vision --vision-model qwen3-vl-32b --dpi 300
+
+# API — full extraction via VLM
+curl -F "file=@scan.pdf" -F "vision=true" -F "format=csv" \
+  http://localhost:8080/extract -o out.csv
+
+# API — vision-only transcription (per-page text, no structured extraction)
+curl -F "file=@scan.pdf" \
+  -F "model_url=http://10.10.100.80:30911/v1" \
+  -F "api_key=<token>" \
+  http://localhost:8080/vision
+```
+
+#### OCR only (per-page text — no LLM)
+
+```bash
+# API only (no CLI equivalent — use --detect-only + --verbose for inspection)
+curl -F "file=@scan.pdf" http://localhost:8080/ocr
+# → {"pages": {"1": "text...", "2": "text..."}, "total_pages": 2, ...}
+
+# With options:
+curl -F "file=@scan.pdf" -F "ocr_engine=easyocr" -F "dpi=400" \
+  -F "fix_orientation=true" http://localhost:8080/ocr
+```
+
+#### Sanitize PII (replace with realistic synthetic data for LLM training)
+
+```bash
+# CLI — PDF input → sanitized PDF output (default)
+loci-extract w2.pdf --sanitize regex                    # → w2.sanitized.pdf
+loci-extract w2.pdf --sanitize hybrid                   # regex + LLM for names
+loci-extract w2.pdf --sanitize regex --format csv -o t.csv  # → sanitized CSV
+
+# API — PDF input → sanitized PDF (default format=auto)
+curl -F "file=@w2.pdf" -F "mode=regex" \
+  http://localhost:8080/sanitize -o w2.sanitized.pdf
+
+# API — PDF input → sanitized CSV
+curl -F "file=@w2.pdf" -F "mode=regex" -F "format=csv" \
+  http://localhost:8080/sanitize -o out.csv
+
+# API — LLM-assisted (catches names)
+curl -F "file=@w2.pdf" -F "mode=llm" \
+  -F "model_url=http://10.10.100.80:30911/v1" -F "api_key=<token>" \
+  http://localhost:8080/sanitize -o w2.sanitized.pdf
+```
+
+#### Boundary detection (multi-section PDF splitting)
+
+```bash
+# CLI — automatic: multi-section PDFs are auto-split during extraction
+loci-extract combined-financials.pdf --verbose
+# → "boundary detection: 3 section(s) — BALANCE_SHEET, INCOME_STATEMENT, GENERAL_LEDGER"
+
+# API — inspect boundaries without extracting
+curl -F "file=@combined.pdf" http://localhost:8080/boundaries
+# → {"sections": [{"start_page": 1, "end_page": 2, "document_type": "BALANCE_SHEET"}, ...]}
+```
+
+#### Verify totals (on already-extracted data — no file needed)
+
+```bash
+# API only
+curl -X POST http://localhost:8080/verify \
+  -H "Content-Type: application/json" \
+  -d '{"document_type": "BALANCE_SHEET", "data": {"assets": {...}, ...}}'
+# → {"verified": true, "mismatches": [], "balance_sheet_balanced": true, "derived_fields": {...}}
+```
+
+#### Re-format (convert between output formats without re-extracting)
+
+```bash
+# API only — pass an Extraction JSON, get back CSV/Lacerte/TXF
+curl -X POST "http://localhost:8080/format?format=csv" \
+  -H "Content-Type: application/json" -d @extraction.json -o out.csv
+```
+
+### Additional CLI flags
 
 | Flag | Purpose |
 |---|---|
-| `--detect-only` | Detect document type and exit without calling the LLM (fast — regex/heuristics only) |
-| `--api-key <token>` | Bearer token for authenticated LLM endpoints (default: `$LOCI_EXTRACT_API_KEY_LLM` or `local`) |
-| `--no-fix-orientation` | Disable Tesseract OSD rotation correction (default: enabled — catches scanned-sideways pages) |
-| `--chunk-size 6000` | Max input tokens per LLM chunk for long GL / statement exports |
-| `--no-verify-totals` | Skip Python-side totals verification for financial documents |
-| `--family {tax,financial_simple,financial_multi,financial_txn,financial_reserve}` | Force family dispatch (overrides detector) |
-| `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential) |
-| `--sanitize {regex,llm,hybrid}` | Replace PII with synthetic data for training. `regex`=fast, `llm`=context-aware, `hybrid`=both |
+| `--detect-only` | Detect document type and exit without calling the LLM |
+| `--sanitize {regex,llm,hybrid}` | Replace PII with synthetic data. PDF in → PDF out by default |
+| `--api-key <token>` | Bearer token for authenticated LLM endpoints |
+| `--vision` | Send ALL pages through VLM as images (ignores text layer) |
+| `--vision-model <name>` | Model name for VLM (default: same as `--model-name`) |
+| `--dpi <N>` | Render DPI for OCR and vision mode (default: 300) |
+| `--ocr-engine {auto,tesseract,easyocr,paddleocr}` | OCR engine selection |
+| `--no-fix-orientation` | Disable Tesseract OSD rotation correction |
+| `--chunk-size <N>` | Max input tokens per LLM chunk (default: 6000) |
+| `--parallel-chunks <N>` | Concurrent LLM calls for chunked docs (default: 4) |
+| `--family {tax,financial_simple,...}` | Force family dispatch (overrides detector) |
+| `--no-verify-totals` | Skip Python-side totals verification |
 | `--no-redact` | Disable SSN/TIN last-4 masking on output |
+| `--batch` | Process a directory of PDFs |
+| `--format {json,csv,lacerte,txf}` | Output format (default: json) |
+| `--temperature <F>` | LLM temperature (default: 0.0) |
+| `--max-tokens <N>` | LLM max response tokens (default: 4096) |
+| `--retry <N>` | Retry count on invalid JSON (default: 2) |
 
 ---
 
@@ -186,90 +287,29 @@ Endpoints:
 If `LOCI_EXTRACT_API_KEY` is set, every non-health endpoint requires
 `Authorization: Bearer <key>`. Leave unset for open local access.
 
-### Examples
+### API form fields
 
-**Extract a W-2 to JSON or CSV:**
+All `POST` file-upload endpoints accept these optional form fields to
+override server defaults:
 
-```bash
-curl -F "file=@25-W2.pdf" -F "format=json" http://localhost:8080/extract
-curl -F "file=@balance-sheet.pdf" -F "format=csv" http://localhost:8080/extract -o bs.csv
-```
+| Field | Default | Purpose |
+|---|---|---|
+| `model_url` | server env | OpenAI-compatible LLM base URL |
+| `model_name` | server env | Model name for the LLM |
+| `api_key` | server env | Bearer token for the LLM endpoint |
+| `ocr_engine` | auto | `tesseract` / `easyocr` / `paddleocr` |
+| `dpi` | 300 | Render DPI for OCR/vision |
+| `vision` | false | Send all pages through VLM as images |
+| `vision_model` | model_name | VLM model name (if different) |
+| `redact` | true | Mask SSNs to last 4 on output |
+| `temperature` | 0.0 | LLM temperature |
+| `max_tokens` | 4096 | LLM max response tokens |
+| `retry` | 2 | Retry count on invalid JSON |
 
-**Detect document type (no LLM, fast):**
+`/extract` adds: `format` (json/csv/lacerte/txf).
+`/sanitize` adds: `mode` (regex/llm/hybrid), `format` (auto/pdf/json/csv).
 
-```bash
-curl -F "file=@mystery.pdf" http://localhost:8080/detect
-# → {"document_type": "W2", "document_family": "tax", "confidence": 0.95, ...}
-```
-
-**OCR only — get raw per-page text without extraction:**
-
-```bash
-curl -F "file=@scan.pdf" http://localhost:8080/ocr
-# → {"pages": {"1": "text...", "2": "text..."}, "total_pages": 2, ...}
-```
-
-**Vision only — VLM transcription with a specific model:**
-
-```bash
-curl -F "file=@scan.pdf" \
-  -F "model_url=http://10.10.100.80:30911/v1" \
-  -F "model_name=mlx-community/Qwen3.6-35B-A3B-8bit" \
-  -F "api_key=<token>" \
-  http://localhost:8080/vision
-# → {"pages": {"1": "text...", ...}, "model": "...", "total_pages": 9}
-```
-
-**Extract with vision mode + CSV output (full pipeline via VLM):**
-
-```bash
-curl -F "file=@scan.pdf" -F "vision=true" -F "format=csv" \
-  -F "model_url=http://10.10.100.80:30911/v1" \
-  -F "api_key=<token>" \
-  http://localhost:8080/extract -o result.csv
-```
-
-**Sanitize PII for LLM training data (replaces with realistic synthetic data):**
-
-```bash
-# Regex-only (fast, no LLM needed):
-curl -F "file=@25-W2.pdf" -F "mode=regex" http://localhost:8080/sanitize
-
-# LLM-assisted (catches names via context):
-curl -F "file=@25-W2.pdf" -F "mode=llm" http://localhost:8080/sanitize
-
-# Hybrid (regex for SSNs/phones, then LLM for names):
-curl -F "file=@25-W2.pdf" -F "mode=hybrid" http://localhost:8080/sanitize
-
-# CLI:
-loci-extract 25-W2.pdf --sanitize regex -o training_data.txt
-loci-extract 25-W2.pdf --sanitize hybrid --format json -o sanitized.json
-```
-
-**Detect multi-section boundaries (e.g. BS + P&L in one PDF):**
-
-```bash
-curl -F "file=@combined-financials.pdf" http://localhost:8080/boundaries
-# → {"sections": [{"start_page": 1, "end_page": 2, "document_type": "BALANCE_SHEET", ...}, ...]}
-```
-
-**Verify totals on already-extracted data (no file upload):**
-
-```bash
-curl -X POST http://localhost:8080/verify \
-  -H "Content-Type: application/json" \
-  -d '{"document_type": "BALANCE_SHEET", "data": {"assets": {...}, ...}}'
-# → {"verified": true, "mismatches": [], "balance_sheet_balanced": true, "derived_fields": {...}}
-```
-
-**Re-format extraction results (e.g. JSON → CSV without re-extracting):**
-
-```bash
-curl -X POST "http://localhost:8080/format?format=csv" \
-  -H "Content-Type: application/json" \
-  -d @extraction.json -o result.csv
-```
-
+See the CLI tools section above for curl examples for every endpoint.
 See [docs/integrations.md](docs/integrations.md) for client snippets in
 Python / Node / Go / PowerShell / curl / Make / n8n / Zapier, OpenAPI
 client-code generation, auth setup, and latency/error notes.
