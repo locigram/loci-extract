@@ -59,6 +59,11 @@ def _build_argparser() -> argparse.ArgumentParser:
         help=f"VLM model name for image pages (default: {_DEFAULT_VISION_MODEL})",
     )
     p.add_argument(
+        "--api-key",
+        default=os.getenv("LOCI_EXTRACT_API_KEY_LLM", "local"),
+        help="API key for the LLM endpoint (default: $LOCI_EXTRACT_API_KEY_LLM or 'local' for open servers)",
+    )
+    p.add_argument(
         "--ocr-engine",
         choices=["auto", "tesseract", "easyocr", "paddleocr"],
         default="auto",
@@ -137,6 +142,7 @@ def _options_from_args(args: argparse.Namespace) -> ExtractionOptions:
     return ExtractionOptions(
         model_url=args.model,
         model_name=args.model_name,
+        api_key=args.api_key,
         ocr_engine=args.ocr_engine,
         gpu=args.gpu,
         dpi=args.dpi,

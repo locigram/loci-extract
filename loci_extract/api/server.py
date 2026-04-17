@@ -39,6 +39,7 @@ logger = logging.getLogger("loci_extract.api")
 _DEFAULT_MODEL_URL = os.getenv("LOCI_EXTRACT_MODEL_URL", "http://10.10.100.20:9020/v1")
 _DEFAULT_MODEL_NAME = os.getenv("LOCI_EXTRACT_MODEL_NAME", "qwen3-vl-32b")
 _DEFAULT_VISION_MODEL = os.getenv("LOCI_EXTRACT_VISION_MODEL", _DEFAULT_MODEL_NAME)
+_DEFAULT_LLM_API_KEY = os.getenv("LOCI_EXTRACT_API_KEY_LLM", "local")
 _API_KEY = os.getenv("LOCI_EXTRACT_API_KEY", "").strip()
 _MAX_UPLOAD_BYTES = int(os.getenv("LOCI_EXTRACT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 
@@ -94,10 +95,12 @@ def _options(
     temperature: float | None,
     max_tokens: int | None,
     retry: int | None,
+    api_key: str | None = None,
 ) -> ExtractionOptions:
     return ExtractionOptions(
         model_url=model_url or _DEFAULT_MODEL_URL,
         model_name=model_name or _DEFAULT_MODEL_NAME,
+        api_key=api_key or _DEFAULT_LLM_API_KEY,
         ocr_engine=ocr_engine or "auto",  # type: ignore[arg-type]
         gpu=gpu or "auto",  # type: ignore[arg-type]
         dpi=dpi or 300,

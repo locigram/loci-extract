@@ -82,6 +82,17 @@ export LOCI_EXTRACT_VISION_MODEL=qwen3-vl-32b
 loci-extract 25-W2.pdf --verbose
 ```
 
+For LLM endpoints that require authentication:
+
+```bash
+export LOCI_EXTRACT_API_KEY_LLM=your-bearer-token
+loci-extract 25-W2.pdf --model http://10.10.100.80:30911/v1
+
+# or inline:
+loci-extract 25-W2.pdf --model http://10.10.100.80:30911/v1 \
+  --api-key your-bearer-token
+```
+
 Additional CLI flags:
 
 | Flag | Purpose |
