@@ -98,14 +98,26 @@
         <div class="fh">CSV/Lacerte/TXF support a subset of doc types — see the server logs if formatting fails.</div>
       </div>
       <div class="field">
-        <label for="mu">Model URL</label>
-        <input id="mu" placeholder="(server default)">
-        <div class="fh">OpenAI-compatible endpoint. Leave blank to use the server's configured default.</div>
+        <label for="ep">LLM endpoint</label>
+        <select id="ep" onchange="onEndpointChange()">
+          <option value="" data-url="" data-name="" data-key="">Server default</option>
+          <option value="surugpu" data-url="http://10.10.100.20:9020/v1" data-name="qwen3-vl-32b" data-key="">surugpu — Qwen3-VL 32B (local, no auth)</option>
+          <option value="suru80" data-url="http://10.10.100.80:30911/v1" data-name="mlx-community/Qwen3.6-35B-A3B-8bit" data-key="0822e157af2613bc6c0a6d82d5b435735b9f3a9942c9a097">10.10.100.80 — Qwen3.6 35B-A3B (auth)</option>
+          <option value="custom">Custom...</option>
+        </select>
+        <div class="fh">Pick a preconfigured LLM or enter a custom OpenAI-compatible endpoint.</div>
       </div>
-      <div class="field">
+      <div class="field" id="customEpFields" style="display:none">
+        <label for="mu">Custom URL</label>
+        <input id="mu" placeholder="http://host:port/v1">
+      </div>
+      <div class="field" id="customNameField" style="display:none">
         <label for="mn">Model name</label>
-        <input id="mn" placeholder="(server default)">
-        <div class="fh">e.g. qwen3-vl-32b, qwen2.5:72b</div>
+        <input id="mn" placeholder="e.g. qwen3-vl-32b">
+      </div>
+      <div class="field" id="customKeyField" style="display:none">
+        <label for="ak">API key</label>
+        <input id="ak" type="password" placeholder="Bearer token (leave blank for open endpoints)">
       </div>
       <div class="field">
         <label for="ocr">OCR engine</label>
@@ -189,7 +201,8 @@ fi.addEventListener('change', () => { addFiles(fi.files); fi.value = ''; });
 
 function addFiles(files) {
   for (const f of files) {
-    if (!f.name.toLowerCase().endsWith('.pdf')) continue;
+    const ext = f.name.toLowerCase().split('.').pop();
+    if (!['pdf','xlsx','xlsm','xls','xltx','xltm'].includes(ext)) continue;
     if (queue.some(q => q.file.name === f.name && q.file.size === f.size)) continue;
     queue.push({ id: next++, file: f, status: 'pending', result: null, error: null, t0: null, t1: null, fmt: null });
   }
@@ -202,13 +215,46 @@ $('#clearAll').addEventListener('click', () => { if (!processing) { queue = []; 
 
 function fmtDuration(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
 
+function onEndpointChange() {
+  const sel = $('#ep');
+  const opt = sel.options[sel.selectedIndex];
+  const isCustom = sel.value === 'custom';
+  $('#customEpFields').style.display = isCustom ? '' : 'none';
+  $('#customNameField').style.display = isCustom ? '' : 'none';
+  $('#customKeyField').style.display = isCustom ? '' : 'none';
+  if (!isCustom) {
+    $('#mu').value = opt.dataset.url || '';
+    $('#mn').value = opt.dataset.name || '';
+    $('#ak').value = opt.dataset.key || '';
+  }
+}
+
+function getEndpointSettings() {
+  const sel = $('#ep');
+  const opt = sel.options[sel.selectedIndex];
+  if (sel.value === 'custom' || sel.value === '') {
+    return {
+      model_url: $('#mu').value.trim(),
+      model_name: $('#mn').value.trim(),
+      api_key: ($('#ak') && $('#ak').value.trim()) || '',
+    };
+  }
+  return {
+    model_url: opt.dataset.url || '',
+    model_name: opt.dataset.name || '',
+    api_key: opt.dataset.key || '',
+  };
+}
+
 async function start() {
   if (processing) return;
   processing = true;
   const fmt = $('#fmt').value;
+  const ep = getEndpointSettings();
   const settings = {
-    model_url: $('#mu').value.trim(),
-    model_name: $('#mn').value.trim(),
+    model_url: ep.model_url,
+    model_name: ep.model_name,
+    api_key: ep.api_key,
     ocr_engine: $('#ocr').value,
     dpi: $('#dpi').value,
     vision: $('#vision').checked,

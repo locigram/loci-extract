@@ -186,6 +186,7 @@ def detect_endpoint(
 def extract(    file: UploadFile = File(...),
     model_url: str | None = Form(None),
     model_name: str | None = Form(None),
+    api_key: str | None = Form(None),
     ocr_engine: str | None = Form(None),
     gpu: str | None = Form(None),
     dpi: int | None = Form(None),
@@ -199,7 +200,7 @@ def extract(    file: UploadFile = File(...),
 ) -> Response:
     opts = _options(
         model_url, model_name, ocr_engine, gpu, dpi, vision, vision_model,
-        redact, temperature, max_tokens, retry,
+        redact, temperature, max_tokens, retry, api_key=api_key,
     )
     with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
         tmp_path = Path(tmp)
@@ -216,6 +217,7 @@ def extract(    file: UploadFile = File(...),
 def extract_batch_endpoint(    files: list[UploadFile] = File(...),
     model_url: str | None = Form(None),
     model_name: str | None = Form(None),
+    api_key: str | None = Form(None),
     ocr_engine: str | None = Form(None),
     gpu: str | None = Form(None),
     dpi: int | None = Form(None),
@@ -228,7 +230,7 @@ def extract_batch_endpoint(    files: list[UploadFile] = File(...),
 ) -> dict:
     opts = _options(
         model_url, model_name, ocr_engine, gpu, dpi, vision, vision_model,
-        redact, temperature, max_tokens, retry,
+        redact, temperature, max_tokens, retry, api_key=api_key,
     )
     with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
         tmp_path = Path(tmp)
