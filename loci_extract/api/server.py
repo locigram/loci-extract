@@ -4,6 +4,7 @@ Endpoints:
     GET  /healthz
     GET  /capabilities            → OCR engines, GPU, LLM reachability
     POST /detect                  → multipart file → document type detection (no LLM)
+    POST /sanitize                → multipart file → PII replaced with synthetic data
     POST /ocr                     → multipart file → per-page OCR text (no LLM)
     POST /vision                  → multipart file → per-page VLM transcription
     POST /verify                  → JSON body → totals verification + derived fields
@@ -201,6 +202,61 @@ def format_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid Extraction body: {exc}") from exc
     return _format_response(extraction, format)
+
+
+@app.post("/sanitize", dependencies=[Depends(require_api_key)])
+def sanitize_endpoint(
+    file: UploadFile = File(...),
+    mode: str = Form("regex"),
+    model_url: str | None = Form(None),
+    model_name: str | None = Form(None),
+    api_key: str | None = Form(None),
+    ocr_engine: str | None = Form(None),
+    gpu: str | None = Form(None),
+    dpi: int | None = Form(None),
+    vision: bool = Form(False),
+    vision_model: str | None = Form(None),
+    temperature: float | None = Form(None),
+    max_tokens: int | None = Form(None),
+) -> dict:
+    """Extract text from a file and replace PII with realistic synthetic data.
+
+    Modes: ``regex`` (fast, no LLM), ``llm`` (context-aware), ``hybrid``
+    (regex then LLM for names). EINs are preserved. Returns sanitized text
+    suitable for LLM training data."""
+    from loci_extract.core import _gather_page_text
+    from loci_extract.sanitizer import sanitize
+
+    opts = _options(
+        model_url, model_name, ocr_engine, gpu, dpi, vision, vision_model,
+        True, temperature, max_tokens, None, api_key=api_key,
+    )
+    # Override vision setting from form
+    opts.vision = vision
+    opts.vision_model = vision_model or _DEFAULT_VISION_MODEL
+
+    with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = _save_upload(file, tmp_path)
+        try:
+            from loci_extract.llm import make_client
+            client = make_client(opts.model_url, api_key=opts.api_key)
+            raw_text = _gather_page_text(pdf_path, opts, client, progress=None)
+            if not raw_text.strip():
+                raise RuntimeError("No text could be recovered from the file")
+            llm_client = client if mode in ("llm", "hybrid") else None
+            result = sanitize(
+                raw_text,
+                mode=mode,
+                client=llm_client,
+                model_name=opts.model_name,
+                temperature=opts.temperature if opts.temperature is not None else 0.0,
+                max_tokens=opts.max_tokens or 8192,
+            )
+        except Exception as exc:
+            logger.exception("Sanitization failed")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    return result
 
 
 @app.post("/ocr", dependencies=[Depends(require_api_key)])

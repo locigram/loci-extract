@@ -109,6 +109,7 @@ Additional CLI flags:
 | `--no-verify-totals` | Skip Python-side totals verification for financial documents |
 | `--family {tax,financial_simple,financial_multi,financial_txn,financial_reserve}` | Force family dispatch (overrides detector) |
 | `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential) |
+| `--sanitize {regex,llm,hybrid}` | Replace PII with synthetic data for training. `regex`=fast, `llm`=context-aware, `hybrid`=both |
 | `--no-redact` | Disable SSN/TIN last-4 masking on output |
 
 ---
@@ -169,6 +170,7 @@ Endpoints:
 | GET    | `/healthz`         | Liveness check                                         |
 | GET    | `/capabilities`    | OCR engines available, LLM config, auth status         |
 | POST   | `/detect`          | One file → document type detection (no LLM, fast)      |
+| POST   | `/sanitize`        | One file → PII replaced with synthetic data             |
 | POST   | `/ocr`             | One file → per-page OCR text (no LLM)                  |
 | POST   | `/vision`          | One file → per-page VLM transcription                  |
 | POST   | `/verify`          | JSON body → totals verification + derived fields       |
@@ -225,6 +227,23 @@ curl -F "file=@scan.pdf" -F "vision=true" -F "format=csv" \
   -F "model_url=http://10.10.100.80:30911/v1" \
   -F "api_key=<token>" \
   http://localhost:8080/extract -o result.csv
+```
+
+**Sanitize PII for LLM training data (replaces with realistic synthetic data):**
+
+```bash
+# Regex-only (fast, no LLM needed):
+curl -F "file=@25-W2.pdf" -F "mode=regex" http://localhost:8080/sanitize
+
+# LLM-assisted (catches names via context):
+curl -F "file=@25-W2.pdf" -F "mode=llm" http://localhost:8080/sanitize
+
+# Hybrid (regex for SSNs/phones, then LLM for names):
+curl -F "file=@25-W2.pdf" -F "mode=hybrid" http://localhost:8080/sanitize
+
+# CLI:
+loci-extract 25-W2.pdf --sanitize regex -o training_data.txt
+loci-extract 25-W2.pdf --sanitize hybrid --format json -o sanitized.json
 ```
 
 **Detect multi-section boundaries (e.g. BS + P&L in one PDF):**

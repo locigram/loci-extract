@@ -133,6 +133,15 @@ def _build_argparser() -> argparse.ArgumentParser:
         dest="detect_only",
         help="Detect document type and exit without calling the LLM",
     )
+    p.add_argument(
+        "--sanitize",
+        choices=["regex", "llm", "hybrid"],
+        default=None,
+        dest="sanitize_mode",
+        help="Sanitize PII: replace SSNs/names/addresses with synthetic data. "
+             "regex=fast pattern-matching, llm=context-aware via LLM, "
+             "hybrid=regex then LLM for names. Output is sanitized text (not extraction).",
+    )
     p.add_argument("--verbose", action="store_true", help="Pipeline steps to stderr")
     p.add_argument("--version", action="version", version=f"loci-extract {__version__}")
     return p
@@ -181,6 +190,46 @@ def main(argv: list[str] | None = None) -> int:
 
     progress = _eprint if args.verbose else None
     input_path = Path(args.input)
+
+    # --sanitize: extract text and replace PII with synthetic data
+    if args.sanitize_mode:
+        import json as _json
+
+        from loci_extract.core import _gather_page_text
+        from loci_extract.llm import make_client
+        from loci_extract.sanitizer import sanitize
+
+        if not input_path.is_file():
+            _eprint(f"Input file not found: {input_path}")
+            return 1
+        try:
+            client = make_client(opts.model_url, api_key=opts.api_key)
+            raw_text = _gather_page_text(input_path, opts, client, progress)
+            if not raw_text.strip():
+                _eprint(f"No text could be recovered from {input_path}")
+                return 1
+            llm_client = client if args.sanitize_mode in ("llm", "hybrid") else None
+            result = sanitize(
+                raw_text,
+                mode=args.sanitize_mode,
+                client=llm_client,
+                model_name=opts.model_name,
+                temperature=opts.temperature,
+                max_tokens=opts.max_tokens,
+            )
+        except Exception as exc:
+            _eprint(f"ERROR: {type(exc).__name__}: {exc}")
+            return 1
+        output = _json.dumps(result, indent=2) if args.format == "json" else result["sanitized"]
+        if args.output:
+            Path(args.output).write_text(output, encoding="utf-8")
+            if args.verbose:
+                _eprint(f"wrote {args.output}")
+        else:
+            sys.stdout.write(output)
+            if not output.endswith("\n"):
+                sys.stdout.write("\n")
+        return 0
 
     # --detect-only: detect document type and exit without LLM
     if args.detect_only:
