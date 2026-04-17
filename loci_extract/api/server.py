@@ -4,9 +4,13 @@ Endpoints:
     GET  /healthz
     GET  /capabilities            → OCR engines, GPU, LLM reachability
     POST /detect                  → multipart file → document type detection (no LLM)
-    POST /extract                 → multipart file → Extraction JSON (or any format)
-    POST /extract/batch           → multipart multiple files → per-file results
+    POST /ocr                     → multipart file → per-page OCR text (no LLM)
+    POST /vision                  → multipart file → per-page VLM transcription
+    POST /verify                  → JSON body → totals verification + derived fields
+    POST /boundaries              → multipart file → multi-section boundary detection
     POST /format                  → re-format Extraction JSON → CSV/Lacerte/TXF (no LLM)
+    POST /extract                 → multipart file → full Extraction (OCR/vision + LLM)
+    POST /extract/batch           → multipart multiple files → per-file results
     GET  /                        → web UI (served only if [web] extra installed)
 
 Auth: if ``LOCI_EXTRACT_API_KEY`` is set, every non-/healthz endpoint
@@ -197,6 +201,188 @@ def format_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid Extraction body: {exc}") from exc
     return _format_response(extraction, format)
+
+
+@app.post("/ocr", dependencies=[Depends(require_api_key)])
+def ocr_endpoint(
+    file: UploadFile = File(...),
+    ocr_engine: str | None = Form(None),
+    gpu: str | None = Form(None),
+    dpi: int | None = Form(None),
+    fix_orientation: bool = Form(True),
+) -> dict:
+    """OCR a PDF — returns per-page text without LLM extraction.
+
+    Uses the configured OCR engine (tesseract/easyocr/paddleocr).
+    Image pages are OCR'd; text-layer pages go through pdfminer."""
+    from loci_extract.detector import detect_page_types, get_extraction_strategy
+    from loci_extract.extractor import extract_text_pages
+    from loci_extract.ocr import extract_pages as ocr_extract
+
+    with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = _save_upload(file, tmp_path)
+        try:
+            strategy = get_extraction_strategy(pdf_path)
+            page_types = detect_page_types(pdf_path)
+            encoding_broken = strategy.get("encoding_broken", False)
+
+            if encoding_broken:
+                text_pages, image_pages = [], list(page_types.keys())
+            else:
+                text_pages = [p for p, t in page_types.items() if t == "text"]
+                image_pages = [p for p, t in page_types.items() if t == "image"]
+
+            page_text: dict[int, str] = {}
+            if text_pages:
+                page_text.update(extract_text_pages(pdf_path, text_pages))
+            if image_pages:
+                page_text.update(ocr_extract(
+                    pdf_path, image_pages,
+                    engine=ocr_engine or "auto",
+                    gpu=gpu or "auto",
+                    dpi=dpi or 300,
+                    fix_orientation=fix_orientation,
+                ))
+        except Exception as exc:
+            logger.exception("OCR failed")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    return {
+        "pages": {str(k): v for k, v in sorted(page_text.items())},
+        "total_pages": len(page_types),
+        "text_pages": len(text_pages),
+        "image_pages": len(image_pages),
+        "encoding_broken": encoding_broken,
+        "strategy": strategy.get("strategy", ""),
+    }
+
+
+@app.post("/vision", dependencies=[Depends(require_api_key)])
+def vision_endpoint(
+    file: UploadFile = File(...),
+    model_url: str | None = Form(None),
+    model_name: str | None = Form(None),
+    api_key: str | None = Form(None),
+    dpi: int | None = Form(None),
+    temperature: float | None = Form(None),
+    max_tokens: int | None = Form(None),
+) -> dict:
+    """Send all pages through a VLM for text transcription — no structured extraction.
+
+    Returns raw per-page text as transcribed by the vision model."""
+    from loci_extract.detector import detect_page_types
+    from loci_extract.llm import make_client
+    from loci_extract.vision import vision_extract_pages
+
+    resolved_url = model_url or _DEFAULT_MODEL_URL
+    resolved_name = model_name or _DEFAULT_VISION_MODEL
+    resolved_key = api_key or _DEFAULT_LLM_API_KEY
+    client = make_client(resolved_url, api_key=resolved_key)
+
+    with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = _save_upload(file, tmp_path)
+        try:
+            page_types = detect_page_types(pdf_path)
+            all_pages = sorted(page_types.keys())
+            page_text = vision_extract_pages(
+                client, pdf_path, all_pages,
+                vision_model=resolved_name,
+                system_prompt="You are a careful OCR system. Transcribe visible text exactly.",
+                dpi=dpi or 300,
+                max_tokens=max_tokens or 4096,
+                temperature=temperature if temperature is not None else 0.0,
+            )
+        except Exception as exc:
+            logger.exception("Vision extraction failed")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    return {
+        "pages": {str(k): v for k, v in sorted(page_text.items())},
+        "total_pages": len(all_pages),
+        "model": resolved_name,
+    }
+
+
+@app.post("/verify", dependencies=[Depends(require_api_key)])
+def verify_endpoint(body: dict) -> dict:
+    """Run Python-side totals verification on already-extracted document data.
+
+    Accepts a single document's ``data`` dict (e.g. the ``data`` field from
+    an Extraction document). Returns verification results and derived fields."""
+    from loci_extract.verifier import compute_derived_fields, verify_section_totals
+
+    try:
+        document_type = body.get("document_type", "")
+        data = body.get("data", body)
+        verification = verify_section_totals(data)
+        derived = compute_derived_fields(data, document_type)
+    except Exception as exc:
+        logger.exception("Verification failed")
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    return {
+        "verified": verification.verified,
+        "mismatches": verification.mismatches,
+        "balance_sheet_balanced": verification.balance_sheet_balanced,
+        "notes": verification.notes,
+        "derived_fields": derived,
+    }
+
+
+@app.post("/boundaries", dependencies=[Depends(require_api_key)])
+def boundaries_endpoint(
+    file: UploadFile = File(...),
+    ocr_engine: str | None = Form(None),
+    gpu: str | None = Form(None),
+    dpi: int | None = Form(None),
+) -> dict:
+    """Detect multi-section boundaries in a PDF (e.g. BS + P&L in one file).
+
+    Returns section boundaries with document types and confidence scores."""
+    from dataclasses import asdict
+
+    from loci_extract.boundary_detector import detect_boundaries
+    from loci_extract.detector import detect_page_types, get_extraction_strategy
+    from loci_extract.extractor import extract_text_pages
+    from loci_extract.ocr import extract_pages as ocr_extract
+
+    with tempfile.TemporaryDirectory(prefix="loci-extract-api-") as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = _save_upload(file, tmp_path)
+        try:
+            strategy = get_extraction_strategy(pdf_path)
+            page_types = detect_page_types(pdf_path)
+            encoding_broken = strategy.get("encoding_broken", False)
+
+            if encoding_broken:
+                text_pages, image_pages = [], list(page_types.keys())
+            else:
+                text_pages = [p for p, t in page_types.items() if t == "text"]
+                image_pages = [p for p, t in page_types.items() if t == "image"]
+
+            page_text: dict[int, str] = {}
+            if text_pages:
+                page_text.update(extract_text_pages(pdf_path, text_pages))
+            if image_pages:
+                page_text.update(ocr_extract(
+                    pdf_path, image_pages,
+                    engine=ocr_engine or "auto",
+                    gpu=gpu or "auto",
+                    dpi=dpi or 300,
+                ))
+
+            pages = [{"page": p, "text": page_text.get(p, "")} for p in sorted(page_types.keys())]
+            sections = detect_boundaries(pages)
+        except Exception as exc:
+            logger.exception("Boundary detection failed")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    return {
+        "sections": [asdict(s) for s in sections],
+        "total_pages": len(page_types),
+    }
 
 
 @app.post("/extract", dependencies=[Depends(require_api_key)])

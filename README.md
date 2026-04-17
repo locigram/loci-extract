@@ -163,9 +163,13 @@ Endpoints:
 | GET    | `/healthz`         | Liveness check                                         |
 | GET    | `/capabilities`    | OCR engines available, LLM config, auth status         |
 | POST   | `/detect`          | One file → document type detection (no LLM, fast)      |
+| POST   | `/ocr`             | One file → per-page OCR text (no LLM)                  |
+| POST   | `/vision`          | One file → per-page VLM transcription                  |
+| POST   | `/verify`          | JSON body → totals verification + derived fields       |
+| POST   | `/boundaries`      | One file → multi-section boundary detection             |
+| POST   | `/format`          | Re-format Extraction JSON → CSV/Lacerte/TXF (no LLM)  |
 | POST   | `/extract`         | One PDF → Extraction JSON (or csv/lacerte/txf)         |
 | POST   | `/extract/batch`   | Many PDFs → per-file results                           |
-| POST   | `/format`          | Re-format Extraction JSON → CSV/Lacerte/TXF (no LLM)  |
 | GET    | `/docs`            | Swagger UI                                             |
 | GET    | `/`                | Drop-zone web UI                                       |
 

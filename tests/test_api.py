@@ -98,6 +98,48 @@ def test_format_endpoint_json(client):
     assert r.headers["content-type"].startswith("application/json")
 
 
+def test_verify_endpoint(client):
+    body = {
+        "document_type": "BALANCE_SHEET",
+        "data": {
+            "assets": {"sections": [], "total_assets": 100.0},
+            "liabilities": {"sections": [], "total_liabilities": 60.0},
+            "equity": {"sections": [], "total_equity_reported": 40.0},
+        },
+    }
+    r = client.post("/verify", json=body)
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert "verified" in result
+    assert "derived_fields" in result
+
+
+def test_ocr_endpoint_wired(monkeypatch):
+    """Verify /ocr endpoint is reachable and wired correctly (stubbed OCR)."""
+    from loci_extract.api import server
+
+    def fake_detect_page_types(_path):
+        return {1: "image"}
+
+    def fake_strategy(_path):
+        return {"strategy": "ocr", "encoding_broken": False, "reason": "stub"}
+
+    def fake_ocr(_path, pages, **kwargs):
+        return {p: f"OCR text page {p}" for p in pages}
+
+    monkeypatch.setattr("loci_extract.detector.detect_page_types", fake_detect_page_types)
+    monkeypatch.setattr("loci_extract.detector.get_extraction_strategy", fake_strategy)
+    monkeypatch.setattr("loci_extract.ocr.extract_pages", fake_ocr)
+
+    c = TestClient(server.app)
+    files = {"file": ("test.pdf", b"%PDF-1.4\n%EOF\n", "application/pdf")}
+    r = c.post("/ocr", files=files)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "pages" in body
+    assert body["pages"]["1"] == "OCR text page 1"
+
+
 def test_detect_endpoint(monkeypatch):
     from loci_extract.api import server
 
