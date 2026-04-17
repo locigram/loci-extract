@@ -191,36 +191,35 @@ def main(argv: list[str] | None = None) -> int:
     progress = _eprint if args.verbose else None
     input_path = Path(args.input)
 
-    # --sanitize: extract text and replace PII with synthetic data
+    # --sanitize: extract normally, then sanitize PII in the result
     if args.sanitize_mode:
-        import json as _json
-
-        from loci_extract.core import _gather_page_text
         from loci_extract.llm import make_client
-        from loci_extract.sanitizer import sanitize
+        from loci_extract.sanitizer import sanitize_extraction
 
         if not input_path.is_file():
             _eprint(f"Input file not found: {input_path}")
             return 1
         try:
-            client = make_client(opts.model_url, api_key=opts.api_key)
-            raw_text = _gather_page_text(input_path, opts, client, progress)
-            if not raw_text.strip():
-                _eprint(f"No text could be recovered from {input_path}")
-                return 1
-            llm_client = client if args.sanitize_mode in ("llm", "hybrid") else None
-            result = sanitize(
-                raw_text,
+            # Step 1: full extraction (same as normal path)
+            extraction = extract_document(input_path, opts, progress_callback=progress)
+            if progress:
+                progress(f"sanitizing PII (mode={args.sanitize_mode})...")
+            # Step 2: sanitize the extraction result
+            client = make_client(opts.model_url, api_key=opts.api_key) if args.sanitize_mode in ("llm", "hybrid") else None
+            san_result = sanitize_extraction(
+                extraction.model_dump(),
                 mode=args.sanitize_mode,
-                client=llm_client,
+                client=client,
                 model_name=opts.model_name,
                 temperature=opts.temperature,
                 max_tokens=opts.max_tokens,
             )
+            # Step 3: format the sanitized extraction in the requested format
+            sanitized_extraction = Extraction.model_validate(san_result["extraction"])
+            output = format_extraction(sanitized_extraction, args.format)
         except Exception as exc:
             _eprint(f"ERROR: {type(exc).__name__}: {exc}")
             return 1
-        output = _json.dumps(result, indent=2) if args.format == "json" else result["sanitized"]
         if args.output:
             Path(args.output).write_text(output, encoding="utf-8")
             if args.verbose:

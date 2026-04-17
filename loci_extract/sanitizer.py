@@ -297,4 +297,158 @@ def sanitize(text: str, mode: str = "regex", client=None, model_name: str = "",
     raise ValueError(f"Unknown sanitize mode: {mode!r}. Use 'regex', 'llm', or 'hybrid'.")
 
 
-__all__ = ["sanitize", "sanitize_regex", "sanitize_llm", "sanitize_hybrid"]
+# ---------------------------------------------------------------------------
+# Structured extraction sanitization (walk dict tree)
+# ---------------------------------------------------------------------------
+
+# Keys whose values should NOT be sanitized (dollar amounts, doc types, etc.)
+_SKIP_KEYS = frozenset({
+    "document_type", "tax_year", "document_family", "confidence",
+    "row_type", "section_name", "subsection", "column_type", "key", "label",
+    "accounting_basis", "software", "period_start", "period_end",
+    "code", "description",  # Box 12 codes like "AA", "DD"
+    # Numeric / boolean fields are skipped by type, not by name
+})
+
+# Keys that contain PII and should always be sanitized
+_PII_KEYS = frozenset({
+    "name", "address", "ssn_last4", "tin_last4", "tin", "phone",
+    "state_id", "account_number", "entity",
+})
+
+
+def _sanitize_scalar_regex(value: str, seen: dict[str, str],
+                            replacements: list[dict]) -> str:
+    """Apply regex PII replacement to a single string value."""
+    def _replace(match: re.Match, kind: str, gen_fn) -> str:
+        original = match.group(0)
+        if original in seen:
+            return seen[original]
+        synthetic = gen_fn(original)
+        seen[original] = synthetic
+        replacements.append({"original": original, "replacement": synthetic, "kind": kind})
+        return synthetic
+
+    result = value
+    result = _SSN_FULL.sub(lambda m: _replace(m, "ssn", _fake_ssn), result)
+    result = _PHONE.sub(lambda m: _replace(m, "phone", _fake_phone), result)
+    result = _ADDRESS.sub(lambda m: _replace(m, "address", _fake_address), result)
+    return result
+
+
+def _sanitize_name(value: str, seen: dict[str, str],
+                    replacements: list[dict]) -> str:
+    """Replace a name field with a synthetic name."""
+    if not value or not value.strip():
+        return value
+    if value in seen:
+        return seen[value]
+    synthetic = _fake_name(value)
+    seen[value] = synthetic
+    replacements.append({"original": value, "replacement": synthetic, "kind": "name"})
+    return synthetic
+
+
+def _walk_and_sanitize(obj, seen: dict[str, str], replacements: list[dict],
+                        parent_key: str = "") -> object:
+    """Recursively walk a dict/list tree and sanitize string PII values."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in _SKIP_KEYS and k not in _PII_KEYS:
+                out[k] = v
+            elif k == "name" and isinstance(v, str):
+                # Name fields get synthetic name replacement
+                out[k] = _sanitize_name(v, seen, replacements)
+            elif k == "address" and isinstance(v, str):
+                if v.strip():
+                    if v in seen:
+                        out[k] = seen[v]
+                    else:
+                        synthetic = _fake_address(v)
+                        seen[v] = synthetic
+                        replacements.append({"original": v, "replacement": synthetic, "kind": "address"})
+                        out[k] = synthetic
+                else:
+                    out[k] = v
+            elif k in ("ssn_last4", "tin_last4") and isinstance(v, str):
+                if v in seen:
+                    out[k] = seen[v]
+                else:
+                    synthetic = _fake_ssn(v)[-4:]
+                    full_mask = f"XXX-XX-{synthetic}"
+                    seen[v] = full_mask
+                    replacements.append({"original": v, "replacement": full_mask, "kind": "ssn"})
+                    out[k] = full_mask
+            elif isinstance(v, str):
+                out[k] = _sanitize_scalar_regex(v, seen, replacements)
+            else:
+                out[k] = _walk_and_sanitize(v, seen, replacements, parent_key=k)
+        return out
+    if isinstance(obj, list):
+        return [_walk_and_sanitize(item, seen, replacements, parent_key) for item in obj]
+    if isinstance(obj, str):
+        return _sanitize_scalar_regex(obj, seen, replacements)
+    return obj
+
+
+def sanitize_extraction(extraction_dict: dict, mode: str = "regex",
+                         client=None, model_name: str = "",
+                         temperature: float = 0.0, max_tokens: int = 8192) -> dict:
+    """Sanitize PII in a structured Extraction dict. Returns the sanitized
+    dict in the same format (ready to be formatted as JSON/CSV/etc).
+
+    For regex mode: walks the dict tree and replaces PII in string values.
+    For llm/hybrid modes: serializes to text, sends to LLM, then re-parses.
+    Falls back to regex tree-walk if LLM returns unparseable output.
+    """
+    import copy
+    import json
+
+    sanitized = copy.deepcopy(extraction_dict)
+    replacements: list[dict] = []
+    seen: dict[str, str] = {}
+
+    if mode == "regex":
+        sanitized = _walk_and_sanitize(sanitized, seen, replacements)
+        return {"extraction": sanitized, "replacements": replacements, "mode": "regex"}
+
+    if mode in ("llm", "hybrid"):
+        if client is None:
+            raise ValueError("LLM client required for mode='llm' or 'hybrid'")
+        # Step 1: regex pass on the tree (cheap)
+        if mode == "hybrid":
+            sanitized = _walk_and_sanitize(sanitized, seen, replacements)
+
+        # Step 2: serialize → LLM → re-parse
+        text_to_sanitize = json.dumps(sanitized, indent=2)
+        llm_result = sanitize_llm(text_to_sanitize, client, model_name,
+                                   temperature=temperature, max_tokens=max_tokens)
+        try:
+            sanitized = json.loads(llm_result["sanitized"])
+        except (json.JSONDecodeError, TypeError):
+            # LLM returned non-JSON — fall back to regex-only result
+            if mode != "hybrid":
+                sanitized = _walk_and_sanitize(
+                    copy.deepcopy(extraction_dict), seen, replacements
+                )
+
+        result = {
+            "extraction": sanitized,
+            "replacements": replacements,
+            "mode": mode,
+            "model": model_name,
+            "prompt_tokens": llm_result.get("prompt_tokens"),
+            "completion_tokens": llm_result.get("completion_tokens"),
+        }
+        if mode == "hybrid":
+            result["regex_replacements"] = replacements
+        return result
+
+    raise ValueError(f"Unknown sanitize mode: {mode!r}")
+
+
+__all__ = [
+    "sanitize", "sanitize_regex", "sanitize_llm", "sanitize_hybrid",
+    "sanitize_extraction",
+]

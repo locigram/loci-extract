@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from loci_extract.sanitizer import sanitize, sanitize_regex
+from loci_extract.sanitizer import sanitize, sanitize_extraction, sanitize_regex
 
 # ---------------------------------------------------------------------------
 # Regex mode
@@ -119,3 +119,65 @@ def test_sanitize_raises_on_unknown_mode():
 def test_sanitize_raises_without_client_for_llm():
     with pytest.raises(ValueError, match="LLM client required"):
         sanitize("text", mode="llm")
+
+
+# ---------------------------------------------------------------------------
+# Structured extraction sanitization
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_extraction_regex_replaces_names_and_ssns():
+    extraction = {
+        "documents": [{
+            "document_type": "W2",
+            "tax_year": 2025,
+            "data": {
+                "employer": {"name": "Acme Corp", "ein": "12-3456789", "address": "123 Main St"},
+                "employee": {"name": "Jane Smith", "ssn_last4": "XXX-XX-1234", "address": "456 Elm Ave"},
+                "federal": {"box1_wages": 75000.0},
+            },
+        }],
+    }
+    result = sanitize_extraction(extraction, mode="regex")
+    doc = result["extraction"]["documents"][0]
+
+    # Names should be replaced with synthetic names
+    assert doc["data"]["employee"]["name"] != "Jane Smith"
+    assert doc["data"]["employer"]["name"] != "Acme Corp"  # employer name is also a "name" key
+
+    # EIN should be preserved
+    assert doc["data"]["employer"]["ein"] == "12-3456789"
+
+    # Dollar amounts should be preserved
+    assert doc["data"]["federal"]["box1_wages"] == 75000.0
+
+    # Document type should be preserved
+    assert doc["document_type"] == "W2"
+
+    # Replacements should be tracked
+    assert len(result["replacements"]) >= 2
+
+
+def test_sanitize_extraction_preserves_structure():
+    extraction = {
+        "documents": [{
+            "document_type": "1099-NEC",
+            "tax_year": 2025,
+            "data": {
+                "payer": {"name": "Big Corp", "ein": "98-7654321"},
+                "recipient": {"name": "John Doe", "ssn_last4": "XXX-XX-5678"},
+                "box1_nonemployee_compensation": 50000.0,
+            },
+        }],
+    }
+    result = sanitize_extraction(extraction, mode="regex")
+    doc = result["extraction"]["documents"][0]
+
+    # Structure is preserved
+    assert doc["document_type"] == "1099-NEC"
+    assert doc["tax_year"] == 2025
+    assert doc["data"]["box1_nonemployee_compensation"] == 50000.0
+    assert doc["data"]["payer"]["ein"] == "98-7654321"  # EIN preserved
+
+    # Names are replaced
+    assert doc["data"]["recipient"]["name"] != "John Doe"
