@@ -97,12 +97,13 @@ Additional CLI flags:
 
 | Flag | Purpose |
 |---|---|
+| `--detect-only` | Detect document type and exit without calling the LLM (fast — regex/heuristics only) |
+| `--api-key <token>` | Bearer token for authenticated LLM endpoints (default: `$LOCI_EXTRACT_API_KEY_LLM` or `local`) |
 | `--no-fix-orientation` | Disable Tesseract OSD rotation correction (default: enabled — catches scanned-sideways pages) |
 | `--chunk-size 6000` | Max input tokens per LLM chunk for long GL / statement exports |
 | `--no-verify-totals` | Skip Python-side totals verification for financial documents |
 | `--family {tax,financial_simple,financial_multi,financial_txn,financial_reserve}` | Force family dispatch (overrides detector) |
-| `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential). Multi-chunk GL / long comparison reports get Nx speedup bounded by the LLM server's batch capacity. |
-| `--detect-only` | Detect document type and exit without calling the LLM (fast — regex/heuristics only) |
+| `--parallel-chunks N` | Concurrent LLM calls for chunked financial docs (default: 4; 1 = sequential) |
 | `--no-redact` | Disable SSN/TIN last-4 masking on output |
 
 ---
@@ -178,11 +179,71 @@ Endpoints:
 If `LOCI_EXTRACT_API_KEY` is set, every non-health endpoint requires
 `Authorization: Bearer <key>`. Leave unset for open local access.
 
-### Example
+### Examples
+
+**Extract a W-2 to JSON or CSV:**
 
 ```bash
 curl -F "file=@25-W2.pdf" -F "format=json" http://localhost:8080/extract
 curl -F "file=@balance-sheet.pdf" -F "format=csv" http://localhost:8080/extract -o bs.csv
+```
+
+**Detect document type (no LLM, fast):**
+
+```bash
+curl -F "file=@mystery.pdf" http://localhost:8080/detect
+# → {"document_type": "W2", "document_family": "tax", "confidence": 0.95, ...}
+```
+
+**OCR only — get raw per-page text without extraction:**
+
+```bash
+curl -F "file=@scan.pdf" http://localhost:8080/ocr
+# → {"pages": {"1": "text...", "2": "text..."}, "total_pages": 2, ...}
+```
+
+**Vision only — VLM transcription with a specific model:**
+
+```bash
+curl -F "file=@scan.pdf" \
+  -F "model_url=http://10.10.100.80:30911/v1" \
+  -F "model_name=mlx-community/Qwen3.6-35B-A3B-8bit" \
+  -F "api_key=<token>" \
+  http://localhost:8080/vision
+# → {"pages": {"1": "text...", ...}, "model": "...", "total_pages": 9}
+```
+
+**Extract with vision mode + CSV output (full pipeline via VLM):**
+
+```bash
+curl -F "file=@scan.pdf" -F "vision=true" -F "format=csv" \
+  -F "model_url=http://10.10.100.80:30911/v1" \
+  -F "api_key=<token>" \
+  http://localhost:8080/extract -o result.csv
+```
+
+**Detect multi-section boundaries (e.g. BS + P&L in one PDF):**
+
+```bash
+curl -F "file=@combined-financials.pdf" http://localhost:8080/boundaries
+# → {"sections": [{"start_page": 1, "end_page": 2, "document_type": "BALANCE_SHEET", ...}, ...]}
+```
+
+**Verify totals on already-extracted data (no file upload):**
+
+```bash
+curl -X POST http://localhost:8080/verify \
+  -H "Content-Type: application/json" \
+  -d '{"document_type": "BALANCE_SHEET", "data": {"assets": {...}, ...}}'
+# → {"verified": true, "mismatches": [], "balance_sheet_balanced": true, "derived_fields": {...}}
+```
+
+**Re-format extraction results (e.g. JSON → CSV without re-extracting):**
+
+```bash
+curl -X POST "http://localhost:8080/format?format=csv" \
+  -H "Content-Type: application/json" \
+  -d @extraction.json -o result.csv
 ```
 
 See [docs/integrations.md](docs/integrations.md) for client snippets in
@@ -218,12 +279,17 @@ runs every per-doc-type model's validator.
   (encoding_broken, pages_rotated, totals_verified, balance_sheet_balanced,
   llm_calls/retries, notes, …)
 - **csv** — shape dispatched by document family:
-  - Tax: one row per document with tax-centric columns
-  - Financial Shape A (BalanceSheet, IncomeStatement, MultiColumn, etc.):
+  - **W-2**: flat one-row-per-W-2 layout with every IRS box as its own column
+    (employer/employee info, boxes 1–11, box 12a–d code+amount, box 13 Y/N
+    checkboxes, box 14 other, state 1–2, local 1–2). No JSON blobs — open
+    in Excel and every field is immediately readable for human verification.
+  - **Other tax** (1099s, K-1s, etc.): one row per document with parties +
+    primary amount.
+  - **Financial Shape A** (BalanceSheet, IncomeStatement, MultiColumn, etc.):
     one row per account with dynamic period columns + subtotal + total rows
-  - Financial Shape B (GeneralLedger): one row per transaction with
+  - **Financial Shape B** (GeneralLedger): one row per transaction with
     balance_header / balance_footer boundary rows
-  - Financial Shape B-aging: one row per customer/vendor + totals row
+  - **Financial Shape B-aging**: one row per customer/vendor + totals row
 - **lacerte** — tab-delimited Lacerte import (tax only: W-2, 1099-NEC, 1099-INT,
   1099-DIV, 1099-R). Financial types raise `NotImplementedError` with guidance.
 - **txf** — TXF v42 for TurboTax / TaxAct / UltraTax (W-2 + 1099-INT/DIV/R).
@@ -313,10 +379,11 @@ loci_extract/
   chunker.py            # 3-tier text chunking (account boundary / page break / fixed)
   verifier.py           # Decimal totals verifier + derived-field computation
   cli.py                # argparse entry point (loci-extract)
-  api/server.py         # FastAPI (loci-extract-api)
-  webapp/static/        # drop-zone UI (served by the API)
-  formatters/           # json / csv / lacerte / txf (CSV has 3 shapes for financials)
-tests/                  # 90+ tests, stubbed LLM; guarded live-LLM integration tests
+  api/server.py         # FastAPI — /extract, /detect, /ocr, /vision, /verify,
+                        # /boundaries, /format, /extract/batch, /healthz, /capabilities
+  webapp/static/        # drop-zone UI with endpoint selector + batch CSV export
+  formatters/           # json / csv / lacerte / txf (CSV: flat W-2 columns, 3 financial shapes)
+tests/                  # 120+ tests, stubbed LLM; guarded live-LLM integration tests
 tests/fixtures/         # sanitized real PDF fixtures for integration tests
 ```
 
