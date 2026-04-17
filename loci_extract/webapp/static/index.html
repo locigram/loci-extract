@@ -131,11 +131,11 @@
       <div class="field">
         <label for="dpi">DPI</label>
         <input id="dpi" type="number" min="150" max="600" value="300">
-        <div class="fh">Raise for degraded scans (e.g., 400).</div>
+        <div class="fh">Image render DPI for OCR and vision mode. Raise for degraded scans (e.g., 400).</div>
       </div>
       <div class="field">
         <label><input type="checkbox" id="vision"> Vision mode</label>
-        <div class="fh">Skip OCR on image pages — send page images to the VLM directly.</div>
+        <div class="fh">Send ALL pages through the VLM as images (ignores text layer — best for scans and image-only PDFs). Uses the DPI setting for rendering.</div>
       </div>
       <div class="field">
         <label><input type="checkbox" id="redact" checked> Redact SSN/TIN</label>

@@ -5,13 +5,12 @@ the CLI, the API, and the webapp. It:
 
   1. detects per-page type (text vs image)
   2. extracts page text via pdfminer (text pages), OCR (image pages, default),
-     or the VLM (image pages when ``opts.vision=True``, or all pages when
-     ``opts.vision=True`` is meant as "use vision everywhere")
-  3. concatenates pages with ``\n---PAGE BREAK---\n``
-  4. augments the prompt with per-doc-type hints from the detector
-  5. calls the LLM to produce structured JSON
-  6. validates with the pydantic schema and redacts SSN
-  7. applies post-hoc dedup for W-2 copies (belt-and-suspenders)
+     or the VLM (all pages when ``opts.vision=True``)
+  3. runs boundary detection to split multi-section PDFs
+  4. for each section: detects family, augments the prompt, calls the LLM
+  5. validates with the pydantic schema and redacts SSN
+  6. applies post-hoc dedup for W-2 copies (belt-and-suspenders)
+  7. merges section results into one Extraction
 
 ``extract_batch(paths, opts)`` is a loop that returns one Extraction per
 input PDF. It does not merge across PDFs — callers typically want a
@@ -98,20 +97,25 @@ def _dedup_documents(extraction: Extraction) -> Extraction:
 
 
 # ---------------------------------------------------------------------------
-# Text gathering (per page → one big blob)
+# Text gathering (per page → dict)
 # ---------------------------------------------------------------------------
 
 
-def _gather_page_text(
+def _gather_pages(
     pdf_path: Path,
     opts: ExtractionOptions,
     client,
     progress: ProgressCallback | None,
-) -> str:
-    # Step 0: global strategy check (pdffonts Identity-H with uni=no → OCR).
-    # This must run before detect_page_types — encoding-broken PDFs have a
-    # non-empty but garbage text layer, and detect_page_types's char-count
-    # threshold would misclassify all pages as "text".
+) -> dict[int, str]:
+    """Extract per-page text. Returns ``{page_num: text}``.
+
+    When ``opts.vision=True``, ALL pages are rendered as images and sent to
+    the VLM — the text layer is ignored entirely. This is the reliable path
+    for scans, image-only PDFs, and encoding-broken PDFs.
+
+    When ``opts.vision=False`` (default), text-layer pages go through pdfminer
+    and image pages go through the configured OCR engine.
+    """
     from loci_extract.detector import get_extraction_strategy
     strategy_info = get_extraction_strategy(pdf_path)
     encoding_broken = strategy_info.get("encoding_broken", False)
@@ -125,41 +129,40 @@ def _gather_page_text(
         progress(f"pages detected: {len(page_types)} ({sum(1 for v in page_types.values() if v == 'text')} text, "
                  f"{sum(1 for v in page_types.values() if v == 'image')} image)")
 
-    if encoding_broken:
-        # Force every page through the image path regardless of pdfminer's
-        # text-length vote. The text layer is glyph IDs, not Unicode.
-        text_pages: list[int] = []
-        image_pages = list(page_types.keys())
-    else:
-        text_pages = [p for p, t in page_types.items() if t == "text"]
-        image_pages = [p for p, t in page_types.items() if t == "image"]
-
     page_text: dict[int, str] = {}
 
-    # Text pages → pdfminer
-    if text_pages:
+    if opts.vision:
+        # Vision mode: render ALL pages as images → VLM.
+        # Ignores text layer entirely — best for scans and image-only PDFs.
+        all_pages = sorted(page_types.keys())
+        vision_model = opts.vision_model or opts.model_name
         if progress:
-            progress(f"extracting text layer for {len(text_pages)} page(s) via pdfminer")
-        page_text.update(extract_text_pages(pdf_path, text_pages))
-
-    # Image pages — OCR or vision
-    if image_pages:
-        if opts.vision:
-            vision_model = opts.vision_model or opts.model_name
-            if progress:
-                progress(f"rendering {len(image_pages)} image page(s) for VLM ({vision_model})")
-            vision_text = vision_extract_pages(
-                client,
-                pdf_path,
-                image_pages,
-                vision_model=vision_model,
-                system_prompt="You are a careful OCR system. Transcribe visible text exactly.",
-                dpi=opts.dpi,
-                max_tokens=opts.max_tokens,
-                temperature=opts.temperature,
-            )
-            page_text.update(vision_text)
+            progress(f"rendering {len(all_pages)} page(s) for VLM ({vision_model}) at {opts.dpi} DPI")
+        page_text = vision_extract_pages(
+            client,
+            pdf_path,
+            all_pages,
+            vision_model=vision_model,
+            system_prompt="You are a careful OCR system. Transcribe visible text exactly.",
+            dpi=opts.dpi,
+            max_tokens=opts.max_tokens,
+            temperature=opts.temperature,
+        )
+    else:
+        # Standard path: text pages → pdfminer, image pages → OCR
+        if encoding_broken:
+            text_pages: list[int] = []
+            image_pages = list(page_types.keys())
         else:
+            text_pages = [p for p, t in page_types.items() if t == "text"]
+            image_pages = [p for p, t in page_types.items() if t == "image"]
+
+        if text_pages:
+            if progress:
+                progress(f"extracting text layer for {len(text_pages)} page(s) via pdfminer")
+            page_text.update(extract_text_pages(pdf_path, text_pages))
+
+        if image_pages:
             if progress:
                 progress(f"OCRing {len(image_pages)} image page(s) via {opts.ocr_engine}")
             ocr_text = ocr_extract_pages(
@@ -172,8 +175,11 @@ def _gather_page_text(
             )
             page_text.update(ocr_text)
 
-    # Concatenate in page order with explicit breaks so the LLM can see
-    # the original pagination.
+    return page_text
+
+
+def _concat_pages(page_text: dict[int, str]) -> str:
+    """Join per-page text with ``--- PAGE N ---`` markers."""
     ordered = sorted(page_text.items())
     parts: list[str] = []
     for page_num, text in ordered:
@@ -183,6 +189,80 @@ def _gather_page_text(
         parts.append(f"--- PAGE {page_num} ---")
         parts.append(text)
     return "\n".join(parts)
+
+
+# Keep the old name as an alias for callers that use it directly
+# (e.g. detect_document, API endpoints).
+def _gather_page_text(
+    pdf_path: Path,
+    opts: ExtractionOptions,
+    client,
+    progress: ProgressCallback | None,
+) -> str:
+    """Legacy wrapper: gather pages and concatenate. Used by detect_document()."""
+    return _concat_pages(_gather_pages(pdf_path, opts, client, progress))
+
+
+# ---------------------------------------------------------------------------
+# Section extraction (one logical document section → Extraction)
+# ---------------------------------------------------------------------------
+
+
+def _extract_section(
+    client,
+    page_text: dict[int, str],
+    opts: ExtractionOptions,
+    progress: ProgressCallback | None,
+) -> Extraction:
+    """Extract one logical section: concat → family detect → LLM dispatch."""
+    raw_text = _concat_pages(page_text)
+    if not raw_text.strip():
+        return Extraction(documents=[])
+
+    # Detector hints
+    hint_types = identify_doc_types(raw_text)
+    hint_text = ""
+    if hint_types:
+        sections = [f"[{t}] {PER_DOC_HINTS[t]}" for t in hint_types if t in PER_DOC_HINTS]
+        if sections:
+            hint_text = (
+                "The document text below is pre-identified as likely containing: "
+                + ", ".join(hint_types)
+                + ". Hints per type:\n"
+                + "\n".join(sections)
+                + "\n\n"
+            )
+    user_text = f"{hint_text}Document text (multiple pages separated by --- PAGE N --- markers):\n\n{raw_text}"
+
+    # Family routing
+    family = _resolve_family(raw_text, opts.force_family)
+    if progress:
+        progress(f"detected family: {family}")
+
+    if family == "tax":
+        extraction = parse_extraction(
+            client,
+            user_text,
+            system_prompt=SYSTEM_PROMPT,
+            model_name=opts.model_name,
+            temperature=opts.temperature,
+            max_tokens=opts.max_tokens,
+            retry=opts.retry,
+            redact=opts.redact,
+        )
+        extraction = _dedup_documents(extraction)
+    else:
+        from loci_extract.core_chunked import extract_financial_document
+
+        extraction = extract_financial_document(
+            client=client,
+            raw_text=raw_text,
+            opts=opts,
+            family=family,
+            progress=progress,
+        )
+
+    return extraction
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +281,12 @@ def extract_document(
 ) -> Extraction:
     """Extract one document (PDF or XLSX) → validated ``Extraction``.
 
-    Dispatch by file extension:
-      - ``.pdf``       → full PDF pipeline (detector → OCR/vision → LLM)
-      - ``.xlsx/...``  → openpyxl text flatten → LLM (skips OCR/vision/encoding
-                         detection entirely — XLSX is already structured data)
+    For PDFs: runs boundary detection to split multi-section documents
+    (e.g. BS + P&L + GL in one file), then extracts each section
+    independently with its own family detection and LLM call.
+
+    For XLSX: single-section extraction (XLSX files don't have page
+    boundaries).
 
     Raises ``json.JSONDecodeError`` / ``pydantic.ValidationError`` if the
     LLM fails all retries, ``RuntimeError`` on empty/invalid input.
@@ -215,7 +297,7 @@ def extract_document(
     if progress_callback:
         progress_callback(f"opening {pdf_path}")
 
-    # XLSX path: no OCR, no vision, no encoding checks — read cells directly.
+    # XLSX path: no OCR, no vision, no encoding checks, no boundaries.
     if pdf_path.suffix.lower() in _XLSX_EXTS:
         from loci_extract.xlsx import extract_xlsx_text
         if progress_callback:
@@ -223,61 +305,49 @@ def extract_document(
         raw_text = extract_xlsx_text(pdf_path)
         if not raw_text.strip():
             raise RuntimeError(f"No cells could be read from {pdf_path}")
-    else:
-        raw_text = _gather_page_text(pdf_path, opts, client, progress_callback)
-        if not raw_text.strip():
-            raise RuntimeError(f"No text could be recovered from {pdf_path} (all pages empty after OCR/vision)")
+        # XLSX is always single-section — extract directly
+        page_text = {1: raw_text}
+        extraction = _extract_section(client, page_text, opts, progress_callback)
+        if progress_callback:
+            progress_callback(f"extracted {len(extraction.documents)} document(s)")
+        return extraction
 
-    # Detector hints (keyword-based). We prepend per-doc nudges for every
-    # doc type the detector found — the model sees a short "your document(s)
-    # appear to include X, Y" preamble to bias layout interpretation.
-    hint_types = identify_doc_types(raw_text)
-    hint_text = ""
-    if hint_types:
-        sections = [f"[{t}] {PER_DOC_HINTS[t]}" for t in hint_types if t in PER_DOC_HINTS]
-        if sections:
-            hint_text = (
-                "The document text below is pre-identified as likely containing: "
-                + ", ".join(hint_types)
-                + ". Hints per type:\n"
-                + "\n".join(sections)
-                + "\n\n"
+    # PDF path: gather per-page text, then boundary-detect + per-section extract.
+    page_text = _gather_pages(pdf_path, opts, client, progress_callback)
+    if not any((t or "").strip() for t in page_text.values()):
+        raise RuntimeError(f"No text could be recovered from {pdf_path} (all pages empty after OCR/vision)")
+
+    # Boundary detection — split multi-section PDFs
+    from loci_extract.boundary_detector import detect_boundaries
+    pages_list = [{"page": p, "text": t} for p, t in sorted(page_text.items())]
+    sections = detect_boundaries(pages_list)
+
+    if len(sections) <= 1:
+        # Single document — fast path, no splitting overhead
+        if progress_callback:
+            progress_callback(f"calling LLM {opts.model_name} at {opts.model_url}")
+        extraction = _extract_section(client, page_text, opts, progress_callback)
+    else:
+        # Multi-section: extract each independently and merge
+        if progress_callback:
+            progress_callback(
+                f"boundary detection: {len(sections)} section(s) — "
+                + ", ".join(f"{s.document_type} (pp {s.start_page}-{s.end_page})" for s in sections)
             )
-    user_text = f"{hint_text}Document text (multiple pages separated by --- PAGE N --- markers):\n\n{raw_text}"
-
-    if progress_callback:
-        progress_callback(f"calling LLM {opts.model_name} at {opts.model_url}")
-
-    # ── Family routing: tax docs use the original parse_extraction path
-    # (preserves byte-exact tax behavior — the golden file regression depends
-    # on this). Financial docs go through the new chunked + verified pipeline.
-    family = _resolve_family(raw_text, opts.force_family)
-    if progress_callback:
-        progress_callback(f"detected family: {family}")
-
-    if family == "tax":
-        extraction = parse_extraction(
-            client,
-            user_text,
-            system_prompt=SYSTEM_PROMPT,
-            model_name=opts.model_name,
-            temperature=opts.temperature,
-            max_tokens=opts.max_tokens,
-            retry=opts.retry,
-            redact=opts.redact,
-        )
-        extraction = _dedup_documents(extraction)
-    else:
-        # Financial branch — chunk → multi-LLM → merge → verify → derived
-        from loci_extract.core_chunked import extract_financial_document
-
-        extraction = extract_financial_document(
-            client=client,
-            raw_text=raw_text,
-            opts=opts,
-            family=family,
-            progress=progress_callback,
-        )
+        all_docs = []
+        for section in sections:
+            subset = {p: t for p, t in page_text.items()
+                      if section.start_page <= p <= section.end_page}
+            if not any((t or "").strip() for t in subset.values()):
+                continue
+            if progress_callback:
+                progress_callback(
+                    f"extracting section: {section.document_type} "
+                    f"(pages {section.start_page}-{section.end_page})"
+                )
+            section_extraction = _extract_section(client, subset, opts, progress_callback)
+            all_docs.extend(section_extraction.documents)
+        extraction = Extraction(documents=all_docs)
 
     if progress_callback:
         progress_callback(f"extracted {len(extraction.documents)} document(s)")

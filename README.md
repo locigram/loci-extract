@@ -61,9 +61,14 @@ loci-extract 25-W2.pdf --format lacerte -o import.txt
 # TXF v42 for TurboTax / TaxAct / UltraTax
 loci-extract 25-W2.pdf --format txf -o import.txf
 
-# Vision mode: send page images directly to a multimodal model (VLM)
+# Vision mode: render ALL pages as images and send to a VLM
+# (ignores text layer — best for scans and image-only PDFs)
 loci-extract bad_scan.pdf --vision --vision-model qwen3-vl-32b \
   --model http://localhost:9020/v1
+
+# Multi-section PDFs are auto-split (e.g. BS + P&L + GL in one file)
+# Each section is detected and extracted independently
+loci-extract combined-financials.pdf --verbose
 
 # Force a specific document family (override detector)
 loci-extract statement.pdf --family financial_simple
@@ -302,12 +307,18 @@ runs every per-doc-type model's validator.
 PDF → detector.get_extraction_strategy()     pdffonts / non-printable /
                                              anchor-words / word-density
                                              → text | pdfplumber | ocr | vision
-    → detector.detect_tax_document_type()    weighted regex scoring,
-      + detect_financial_document_type()     ambiguity resolvers
+    → _gather_pages()                        per-page text extraction:
+        --vision=True → ALL pages → VLM      (renders every page as image)
+        --vision=False → text pages → pdfminer
+                         image pages → OCR
     → boundary_detector.detect_boundaries()  multi-section split per PDF
-    →
+                                             (BS+P&L+GL in one file → 3 sections)
+    → per section:
+      → detector.detect_tax_document_type()  weighted regex scoring,
+        + detect_financial_document_type()   ambiguity resolvers
+      →
       ┌─ tax family ──────────────────────────────────────────────────┐
-      │  pdfminer text / OCR / vision → parse_extraction → Extraction  │
+      │  parse_extraction → Extraction                                 │
       └────────────────────────────────────────────────────────────────┘
       ┌─ financial family ─────────────────────────────────────────────┐
       │  chunker.chunk_for_llm()          3-tier: account boundary      │

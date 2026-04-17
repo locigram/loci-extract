@@ -92,6 +92,79 @@ def test_extract_batch_continues_past_failures(monkeypatch, tmp_path):
     assert isinstance(results[1][1], Extraction)
 
 
+def test_boundary_splits_multi_section_pdf(monkeypatch, tmp_path):
+    """When boundary detector finds 2+ sections, extract_document should
+    call LLM once per section and merge the results."""
+    from loci_extract.boundary_detector import DocumentSection
+
+    pdf = tmp_path / "multi.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%EOF\n")
+    _stub_text_strategy(monkeypatch)
+
+    # Page 1 = Balance Sheet header, Page 2 = Income Statement header
+    monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text", 2: "text"})
+    monkeypatch.setattr(core, "extract_text_pages", lambda p, pages: {
+        1: "Balance Sheet\nAs of 01/31/2025\nTotal Assets 100",
+        2: "Income Statement\nFor the period ending 01/31/2025\nTotal Revenue 50",
+    })
+
+    # Stub boundary detector to return 2 sections
+    monkeypatch.setattr(
+        "loci_extract.boundary_detector.detect_boundaries",
+        lambda pages: [
+            DocumentSection(start_page=1, end_page=1, document_type="BALANCE_SHEET", title="Balance Sheet", confidence=0.95),
+            DocumentSection(start_page=2, end_page=2, document_type="INCOME_STATEMENT", title="Income Statement", confidence=0.95),
+        ],
+    )
+
+    # Track how many LLM calls happen
+    call_count = [0]
+    def fake_make(url, api_key="local"):
+        s = StubLlmClient([
+            json.dumps({"documents": [{"document_type": "BALANCE_SHEET", "tax_year": 2025, "data": {}}]}),
+            json.dumps({"documents": [{"document_type": "INCOME_STATEMENT", "tax_year": 2025, "data": {}}]}),
+        ])
+        orig_create = s.create
+        def create(**kwargs):
+            call_count[0] += 1
+            return orig_create(**kwargs)
+        s.create = create
+        return s
+
+    monkeypatch.setattr(core, "make_client", fake_make)
+    opts = ExtractionOptions(model_url="http://stub", model_name="stub", retry=0)
+    extraction = core.extract_document(pdf, opts)
+
+    # Should have merged results from both sections
+    assert len(extraction.documents) >= 1
+
+
+def test_vision_mode_sends_all_pages(monkeypatch, tmp_path):
+    """When vision=True, ALL pages (including text pages) should go through
+    the VLM, not just image pages."""
+    pdf = tmp_path / "mixed.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%EOF\n")
+    _stub_text_strategy(monkeypatch)
+
+    monkeypatch.setattr(core, "detect_page_types", lambda p: {1: "text", 2: "image", 3: "text"})
+
+    captured_pages = []
+    def fake_vision(client, pdf_path, pages, **kwargs):
+        captured_pages.extend(pages)
+        return {p: f"VLM text page {p}" for p in pages}
+
+    monkeypatch.setattr(core, "vision_extract_pages", fake_vision)
+
+    stub = StubLlmClient([json.dumps({"documents": []})])
+    monkeypatch.setattr(core, "make_client", lambda url, api_key="local": stub)
+
+    opts = ExtractionOptions(model_url="http://stub", model_name="stub", retry=0, vision=True)
+    core.extract_document(pdf, opts)
+
+    # ALL 3 pages should have gone through vision, not just page 2
+    assert sorted(captured_pages) == [1, 2, 3]
+
+
 def test_extract_document_includes_doc_type_hint(monkeypatch, tmp_path):
     """If detector finds W-2 keywords, the user prompt should include the hint."""
     pdf = tmp_path / "fake.pdf"

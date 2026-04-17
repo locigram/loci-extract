@@ -57,11 +57,11 @@ def _stub_pipeline(monkeypatch):
 
 
 def _set_page_text(monkeypatch, text: str):
-    """Short-circuit core._gather_page_text so reportlab PDFs that pdfminer
+    """Short-circuit core._gather_pages so reportlab PDFs that pdfminer
     can't easily parse still exercise the financial branch. The text drives
     detector keyword matching (BALANCE SHEET, GENERAL LEDGER, etc.)."""
-    monkeypatch.setattr(core, "_gather_page_text",
-                         lambda pdf_path, opts, client, progress: text)
+    monkeypatch.setattr(core, "_gather_pages",
+                         lambda pdf_path, opts, client, progress: {1: text})
 
 
 def _canned_llm(monkeypatch, canned_json: str):
