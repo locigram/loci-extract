@@ -44,22 +44,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect Dockerfile
-        id: dockerfile
-        run: |
-          if [ -f Dockerfile ]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'No Dockerfile in this checkout; skipping image build and smoke test.'
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build Docker image
-        if: steps.dockerfile.outputs.present == 'true'
         run: docker build -t loci-extract:ci .
 
       - name: Smoke test container
-        if: steps.dockerfile.outputs.present == 'true'
         run: |
           set -euo pipefail
           docker rm -f loci-extract-ci >/dev/null 2>&1 || true
